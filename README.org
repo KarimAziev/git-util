@@ -1,0 +1,57 @@
+* git-util
+
+Collection of git functions and commands for emacs.
+
+** Requirements
+
++ Emacs >= 27.1
++ [[https://github.com/KarimAziev/ivy-yarn][ivy-yarn]] (optional)
++ jiralib (optional)
++ vc-git
++ url-parse
+
+** Installation
+
+*** Manually
+
+Download repository and it to your load path in your init file:
+
+#+begin_src elisp :eval no
+
+(add-to-list 'load-path "/path/to/git-util)
+
+(require 'git-util)
+
+#+end_src
+
+*** With use-package and straight
+
+#+begin_src elisp :eval no
+
+(use-package git-util
+	:straight (git-util
+			       :repo "KarimAziev/git-util"
+			       :type git
+			       :host github)
+	:commands (git-util-change-remote-to-ssh
+			       git-util-clone-repo
+			       git-util-clone-npm-repo
+			       git-util-visit-remote))
+
+#+end_src
+
+** Commands
+
+*** ~git-util-change-remote-to-ssh~
+Switch remote urLs from HTTPS to SSH.
+*** ~git-util-clone-repo~  (&optional url)
+Clone repository at URL into TARGET-DIR or ~km-download-default-repo-dir~.
+*** ~git-util-clone-npm-repo~
+Clone repository of npm package.
+*** ~git-util-visit-remote~
+Return plist of current git repo as straight recipe :repo, :type and :host.
+** Customization
+
+*** ~git-util-autoinstall-chrome-session-dump~
+Whether to install [[https://github.com/lemnos/chrome-session-dump][chrome-session-dump]] as additional source of git url completions.
+
