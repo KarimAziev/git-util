@@ -138,6 +138,7 @@ Returns (STATUS . OUTPUT) when it is done, where STATUS is the returned error
 code of the process and OUTPUT is its stdout output."
   (let ((buff (generate-new-buffer command)))
     (with-current-buffer buff
+      (erase-buffer)
       (let ((status))
         (setq status (apply #'call-process command nil t nil
                             (delq nil (flatten-list args))))
@@ -286,9 +287,9 @@ The only one exception is made for `user-emacs-directory'."
       (split-string (buffer-substring-no-properties (point-min) (point-max))
                     "\n" t))))
 
-(defun git-util-f-get-git-repos (&optional dir)
-  "Return list of git repositories in DIR or home directory."
-  (unless dir (setq dir (expand-file-name "~/")))
+(defun git-util-f-get-git-repos (&optional directory)
+  "Return list of git repositories in DIRECTORY or home directory."
+  (unless directory (setq directory (expand-file-name "~/")))
   (let ((dirs
          (or
           (let ((command (seq-find #'executable-find
@@ -297,24 +298,24 @@ The only one exception is made for `user-emacs-directory'."
               ((or "fd" "fdfind")
                (apply #'git-util-shell-command-to-list
                       "fdfind"
-                      (nconc
-                       '("--color=never"
-                         "--hidden"
-                         "--glob"
-                         ".git"
-                         "-t"
-                         "d"
-                         "--max-depth" "3")
-                       (git-util-fdfind-get-repo-search-paths))))
+                      '("--color=never"
+                        "--hidden"
+                        "--glob"
+                        ".git"
+                        "-t"
+                        "d")
+                      (git-util-fdfind-get-repo-search-paths directory)
+                      '("-x"
+                        "dirname")))
               ("find" (funcall
                        (git-util--compose
                         (git-util--rpartial split-string "\n" t)
                         shell-command-to-string)
-                       "find " dir " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
+                       "find " directory " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
           (nconc
            (list (expand-file-name "~/"))
            (git-util-f-non-git-dirs-recoursively
-            dir "^[^\\.]")))))
+            directory "^[^\\.]")))))
     (delete-dups (delq nil dirs))))
 
 (defun git-util-f-guess-repos-dirs ()
@@ -599,15 +600,42 @@ With optional argument DEPTH limit max depth."
     (when (string-match-p git-util-host-regexp url)
       url)))
 
+(defun git-util-strip-text-props (item)
+  "If ITEM is string, return it without text properties.
+
+ If ITEM is symbol, return it is `symbol-name.'
+ Otherwise return nil."
+  (cond ((stringp item)
+         (let ((str (seq-copy item)))
+           (set-text-properties 0 (length str) nil str)
+           str))
+        ((and item (symbolp item))
+         (symbol-name item))
+        (nil item)))
+
 (defun git-util-url-get-candidates ()
 	"Return list of urls from `kill-ring', buffer, chrome history, bookmarks etc."
-  (if-let ((git-url-at-point (git-util-git-url-at-point)))
-      (nconc (list git-url-at-point)
-             (git-util-chrome-session-dump-get-active-tabs)
-             (git-util-list-git-urls-from-kill-ring)
-             (git-util-list-git-urls-from-minibuffer-history)
-             (git-util-list-git-urls-from-chrome-bookmarks)
-             (git-util-chrome-git-urls-from-chrome-history))))
+  (let ((urls (delete nil (nconc
+                           (git-util-list-git-urls-from-kill-ring)
+                           (git-util-chrome-session-dump-get-active-tabs)
+                           (git-util-list-git-urls-from-minibuffer-history)
+                           (git-util-list-git-urls-from-chrome-bookmarks)
+                           (git-util-chrome-git-urls-from-chrome-history))))
+        (git-url-at-point (git-util-git-url-at-point))
+        (gui-urls (delq nil (mapcar (git-util--compose
+                                     (git-util--and stringp
+                                                    git-util-strip-text-props
+                                                    (apply-partially
+                                                     #'string-match-p
+                                                     git-util-host-regexp)
+                                                    identity)
+                                     (git-util--partial gui-get-selection))
+                                    '(CLIPBOARD PRIMARY SECONDARY)))))
+    (when git-url-at-point
+      (push git-url-at-point urls))
+    (when gui-urls
+      (setq urls (nconc gui-urls urls)))
+    urls))
 
 (defun git-util-https-url-p (url)
   "Return t if URL string is githost with https protocol."
@@ -712,7 +740,7 @@ With optional argument DEPTH limit max depth."
           :type "git"
           :host (file-name-base host))))
 
-(defun git-util-get-straight-recipe-in-dir (directory)
+(defun git-util-straight-recipe-in-dir (directory)
   "Return plist of git repo in DIRECTORY as straight recipe."
   (let ((default-directory directory))
     (git-util-melpa-current-recipe)))
@@ -736,11 +764,10 @@ With optional argument DEPTH limit max depth."
                        '("Changes not staged for commit:"
                          "Changes to be committed:")))))
 
-(defun git-util-straight-uncommitted-repos ()
-  "Return list of modified repo in straight repos directory."
-  (when (fboundp 'straight--repos-dir)
-    (seq-filter #'git-util-repo-modified-p (git-util-f-get-git-repos
-                                          (straight--repos-dir)))))
+(defun git-util-modified-repos-in-dir (directory)
+  "Return list of modified repos in DIRECTORY."
+  (seq-filter #'git-util-repo-modified-p (git-util-f-get-git-repos
+                                          directory)))
 
 (defun git-util-npm-seach-package-info (name)
   "Search NAME with npm and return alist with package info."
