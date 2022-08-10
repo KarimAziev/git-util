@@ -75,6 +75,20 @@ It is used as source for git url completions."
   (declare (debug t) (pure t) (side-effect-free t))
   `(git-util--pipe ,@(reverse functions)))
 
+(defun git-util-compose-while-not-nil (&rest functions)
+  "Return right-to-left composition from FUNCTIONS."
+  (let ((fn))
+    (setq functions (reverse functions))
+    (setq fn (pop functions))
+    (lambda (&rest args)
+      (let ((arg (unless (null (flatten-list args))
+                   (apply fn args))))
+        (while (setq fn (unless (null arg)
+                          (pop functions)))
+          (let ((res (apply fn (list arg))))
+            (setq arg res)))
+        arg))))
+
 (defmacro git-util--or (&rest functions)
   "Return an unary function which invoke FUNCTIONS until first non-nil result."
   (declare (debug t) (pure t) (side-effect-free t))
@@ -116,6 +130,331 @@ at the values with which this function was called."
      ,(car (list (if (symbolp fn)
                      `(apply #',fn (append pre-args (list ,@args)))
                    `(apply ,fn (append pre-args (list ,@args))))))))
+
+(defun git-util-call-process (command &rest args)
+  "Execute COMMAND with ARGS synchronously.
+
+Returns (STATUS . OUTPUT) when it is done, where STATUS is the returned error
+code of the process and OUTPUT is its stdout output."
+  (let ((buff (generate-new-buffer command)))
+    (with-current-buffer buff
+      (let ((status))
+        (setq status (apply #'call-process command nil t nil
+                            (delq nil (flatten-list args))))
+        (let ((result (string-trim (buffer-string))))
+          (if (= 0 status)
+              (prog1 result (kill-current-buffer))
+            (minibuffer-message "Error %s in %s: %s" command result
+                                (when default-directory
+                                  (abbreviate-file-name
+                                   default-directory)))
+            nil))))))
+
+(defun git-util-exec-in-dir (command project-dir &optional callback)
+  "Execute COMMAND in PROJECT-DIR.
+If PROJECT-DIR doesn't exists, create new.
+Invoke CALLBACK without args."
+  (let ((proc)
+        (buffer (generate-new-buffer (format "*%s*" command))))
+    (progn (switch-to-buffer buffer)
+           (with-current-buffer buffer
+             (if (file-exists-p project-dir)
+                 (setq default-directory project-dir)
+               (mkdir project-dir)
+               (setq default-directory project-dir))
+             (setq proc (start-process-shell-command
+                         (nth 0
+                              (split-string command))
+                         buffer command))
+             (shell-command-save-pos-or-erase)
+             (shell-mode)
+             (view-mode +1))
+           (set-process-sentinel
+            proc
+            (lambda (process _state)
+              (let ((output (with-current-buffer
+                                (process-buffer process)
+                              (buffer-string))))
+                (kill-buffer (process-buffer process))
+                (if (= (process-exit-status process) 0)
+                    (progn
+                      (message "finished")
+                      (if callback
+                          (funcall callback)
+                        (dired project-dir)))
+                  (user-error (format "%s\n%s" command output))))))
+           (set-process-filter proc #'comint-output-filter))))
+
+;; file utils
+
+(defun git-util-f-dirs-recoursively (directory &optional match depth filter-fn)
+  "Return list of directories in DIRECTORY that matches MATCH.
+With optional argument DEPTH limit max depth.
+If FILTER-FN passed call it with directories."
+  (when (or (not (numberp depth))
+            (> depth 0))
+    (let ((dirs (directory-files directory nil match))
+          (it)
+          (acc))
+      (while (setq it (pop dirs))
+        (setq it (expand-file-name it directory))
+        (when (and
+               (file-readable-p it)
+               (file-directory-p it)
+               (if filter-fn
+                   (funcall filter-fn it)
+                 t))
+          (push it acc)
+          (setq acc (if (or (not (numberp depth))
+                            (> depth 0))
+                        (append acc (git-util-f-dirs-recoursively it
+                                                                  match
+                                                                  (when depth
+                                                                    (1- depth))
+                                                                  filter-fn))
+                      acc))))
+      acc)))
+
+(defun git-util-f-non-hidden-files (directory &optional full)
+  "Return relative or full (if FULL is non nil) non-hidden files in DIRECTORY."
+  (if full
+      (mapcar (git-util--rpartial
+               expand-file-name directory)
+              (directory-files directory nil "^[^\\.]" ))
+    (directory-files directory nil "^[^\\.]" )))
+
+(defun git-util-f-non-hidden-dirs (directory &optional full)
+  "Return absolute (with FULL) or relative non-hidden directories in DIRECTORY.
+The only one exception is made for `user-emacs-directory'."
+  (let ((dirs (seq-filter #'file-directory-p
+                          (git-util-f-non-hidden-files directory t))))
+    (if full
+        dirs
+      (let ((len (length (file-name-as-directory
+                          (expand-file-name directory)))))
+        (mapcar
+         (git-util--rpartial substring len) dirs)))))
+
+(defun git-util-shell-command-to-list (command &rest args)
+  "Apply shell COMMAND with ARGS and return list of lines from output."
+  (when-let ((result (apply #'git-util-call-process command args)))
+    (split-string result "\n")))
+
+(defun git-util-fdfind-get-repo-search-paths (&optional directory)
+  "Return flags with non-hidden directories in DIRECTORY to search with `fd'."
+  (unless directory (setq directory "~/"))
+  (let ((dirs (git-util-f-non-hidden-dirs directory t)))
+    (mapcan (lambda (it) (list "--search-path" it))
+            dirs)))
+
+(defun git-util-fdfind-get-all-git-repos (&optional directory)
+  "Return flags with directories in DIRECTORY to search with `fd'."
+  (apply #'git-util-shell-command-to-list
+         "fdfind"
+         (delq nil
+               (nconc '("--color=never"
+                        "--hidden"
+                        "--glob"
+                        ".git"
+                        "-t"
+                        "d")
+                      (git-util-fdfind-get-repo-search-paths directory)
+                      '("-x"
+                        "dirname")))))
+
+(defun git-util-fdfind-get-all-repos-parents-dir (&optional directory)
+  "Return flags with directories in DIRECTORY to search with `fd'."
+  (with-temp-buffer
+    (erase-buffer)
+    (when-let ((buff (current-buffer))
+               (result (apply #'git-util-call-process
+                              "fdfind"
+                              (delq nil
+                                    (nconc (list "--color=never"
+                                                 "--hidden"
+                                                 "--glob"
+                                                 ".git"
+                                                 "-t"
+                                                 "d"
+                                                 "--max-depth" "4"
+                                                 (expand-file-name
+                                                  (or directory "~/")))
+                                           (list "-x" "dirname" "{//}" ))))))
+      (insert result)
+      (shell-command-on-region (point-min) (point-max) "sort" buff)
+      (shell-command-on-region (point-min) (point-max) "uniq" buff)
+      (split-string (buffer-substring-no-properties (point-min) (point-max))
+                    "\n" t))))
+
+(defun git-util-f-get-git-repos (&optional dir)
+  "Return list of git repositories in DIR or home directory."
+  (unless dir (setq dir (expand-file-name "~/")))
+  (let ((dirs
+         (or
+          (let ((command (seq-find #'executable-find
+                                   '("fdfind" "fd" "find"))))
+            (pcase command
+              ((or "fd" "fdfind")
+               (apply #'git-util-shell-command-to-list
+                      "fdfind"
+                      (nconc
+                       '("--color=never"
+                         "--hidden"
+                         "--glob"
+                         ".git"
+                         "-t"
+                         "d"
+                         "--max-depth" "3")
+                       (git-util-fdfind-get-repo-search-paths))))
+              ("find" (funcall
+                       (git-util--compose
+                        (git-util--rpartial split-string "\n" t)
+                        shell-command-to-string)
+                       "find " dir " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
+          (nconc
+           (list (expand-file-name "~/"))
+           (git-util-f-non-git-dirs-recoursively
+            dir "^[^\\.]")))))
+    (delete-dups (delq nil dirs))))
+
+(defun git-util-f-guess-repos-dirs ()
+  "Execute `fdfind' and return list parent directories of git repos."
+  (or
+   (let ((command (seq-find #'executable-find
+                            '("fdfind" "fd" "find"))))
+     (pcase command
+       ((or "fd" "fdfind")
+        (funcall
+         (git-util--compose
+          delete-dups
+          (git-util--partial mapcar (git-util--compose
+                                     git-util-f-parent
+                                     git-util-f-parent))
+          (git-util--rpartial split-string "\n" t)
+          shell-command-to-string
+          (git-util--rpartial string-join "\s"))
+         (list "fdfind" "--color=never --hidden --no-ignore --glob .git -t d")))
+       ("find" (funcall
+                (git-util--compose
+                 delete-dups
+                 (git-util--partial mapcar #'git-util-f-parent)
+                 (git-util--rpartial split-string "\n" t)
+                 shell-command-to-string)
+                "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
+   (nconc
+    (list (expand-file-name "~/"))
+    (git-util-f-non-git-dirs-recoursively
+     "~/" "^[^\\.]"))))
+
+(defun git-util-filter-repos-by-email (email repos-dirs)
+  "Return REPOS-DIRS in which EMAIL is member of authors."
+  (seq-filter (git-util--compose
+               (apply-partially #'member email)
+               git-util-get-authors-emails)
+              repos-dirs))
+
+(defun git-util-f-get-dirs-with-author ()
+  "Read git repository of current author or all."
+  (let ((author (git-util-config "user.email")))
+    (completing-read "Repository: "
+                     (git-util-f-get-git-repos)
+                     (when author
+                       (git-util--compose
+                        (apply-partially #'member author)
+                        git-util-get-authors-emails)))))
+
+(defun git-util-f-parent (path)
+  "Return the parent directory to PATH."
+  (let ((parent (file-name-directory
+                 (directory-file-name
+                  (expand-file-name path default-directory)))))
+    (when-let ((dir (and (file-exists-p path)
+                         (file-exists-p parent)
+                         (not (equal
+                               (file-truename (directory-file-name
+                                               (expand-file-name path)))
+                               (file-truename (directory-file-name
+                                               (expand-file-name parent)))))
+                         (if (file-name-absolute-p path)
+                             (directory-file-name parent)
+                           (file-relative-name parent)))))
+      (file-name-as-directory dir))))
+
+(defun git-util-f-change-ext (file new-ext)
+  "Replace extension of FILE with NEW-EXT."
+  (concat (file-name-sans-extension file) "." new-ext))
+
+(defun git-util-f-guess-repos-dirs-find ()
+	"Execute `find' and return list parent directories of git repos."
+  (completing-read "Direcotory:\s"
+                   (funcall
+                    (git-util--compose
+                     delete-dups
+                     (git-util--partial mapcar #'git-util-f-parent)
+                     (git-util--rpartial split-string "\n" t)
+                     shell-command-to-string)
+                    "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\"")))
+
+(defun git-util-f-directory-files (directory &optional nosort)
+  "Return a list of names of files in DIRECTORY excluding \".\" and \"..\".
+
+Names are that are relative to the specified directory.
+
+If NOSORT is non-nil, the list is not sorted--its order is unpredictable.
+ Otherwise, the list returned is sorted with string-lessp."
+  (directory-files directory nil
+                   directory-files-no-dot-files-regexp nosort))
+
+(defun git-util-f-dir-empty-p (directory)
+  "Return t if DIRECTORY is empty."
+  (null (git-util-f-directory-files directory)))
+
+(defun git-util-f-non-git-dirs-recoursively (directory &optional match depth)
+  "Return list of non git directories in DIRECTORY that matches MATCH.
+With optional argument DEPTH limit max depth."
+  (git-util-f-dirs-recoursively
+   directory match depth
+   (lambda (it)
+     (let ((result (not
+                    (or
+                     (member (file-name-base it)
+                             '("snap" "node_modules" "share"))
+                     ;; (string-match-p "[0-9]" it)
+                     (file-exists-p (expand-file-name ".git" it))
+                     (file-exists-p (expand-file-name "node_modules" it))))))
+       result))))
+
+(defun git-util-read-dir (prompt basename)
+  "Read a new directory with PROMPT and BASENAME."
+  (let* ((dir-files (git-util-f-directory-files default-directory))
+         (default-variants
+          (mapcar
+           (lambda (dir)
+             (if (file-exists-p
+                  (expand-file-name basename dir))
+                 (let ((count 0)
+                       (name basename))
+                   (while (and (file-exists-p
+                                (expand-file-name name dir))
+                               (not (git-util-f-dir-empty-p
+                                     (expand-file-name name dir))))
+                     (setq count (1+ count))
+                     (setq name (format "%s-%s"
+                                        (replace-regexp-in-string
+                                         "-[0-9]+$" "" name)
+                                        count)))
+                   (expand-file-name name dir))
+               (expand-file-name basename dir)))
+           (git-util-f-guess-repos-dirs)))
+         (variants (if (null dir-files)
+                       (append `(,default-directory) default-variants)
+                     default-variants)))
+    (file-name-as-directory
+     (completing-read (or prompt "Directory:\s") variants nil nil
+                      (git-util-f-parent
+                       (car variants))))))
+
+;; chrome
 
 (defvar git-util-chrome-url-chrome-history-file nil
   "Chrome history SQLite database file.")
@@ -180,7 +519,7 @@ at the values with which this function was called."
                 (setq children (push (plist-get current :url) children)))))))
       children)))
 
-(defun git-util-read-git-urls-from-chrome-history ()
+(defun git-util-chrome-git-urls-from-chrome-history ()
   "Read `git-util-chrome-url-chrome-history-file' and return list of git urls."
   (unless git-util-chrome-url-chrome-history-file
     (setq git-util-chrome-url-chrome-history-file
@@ -223,34 +562,6 @@ at the values with which this function was called."
      "sudo curl -o /usr/bin/chrome-session-dump -L 'https://github.com/lemnos/chrome-session-dump/releases/download/v0.0.2/chrome-session-dump-linux' && sudo chmod 755 /usr/bin/chrome-session-dump"
      git-util-chrome-sesssion-dump-buffer)))
 
-(defun git-util-f-dirs-recoursively (directory &optional match depth filter-fn)
-  "Return list of directories in DIRECTORY that matches MATCH.
-With optional argument DEPTH limit max depth.
-If FILTER-FN passed call it with directories."
-  (when (or (not (numberp depth))
-            (> depth 0))
-    (let ((dirs (directory-files directory nil match))
-          (it)
-          (acc))
-      (while (setq it (pop dirs))
-        (setq it (expand-file-name it directory))
-        (when (and
-               (file-readable-p it)
-               (file-directory-p it)
-               (if filter-fn
-                   (funcall filter-fn it)
-                 t))
-          (push it acc)
-          (setq acc (if (or (not (numberp depth))
-                            (> depth 0))
-                        (append acc (git-util-f-dirs-recoursively it
-                                                                  match
-                                                                  (when depth
-                                                                    (1- depth))
-                                                                  filter-fn))
-                      acc))))
-      acc)))
-
 (defun git-util-chrome-session-dump-get-active-tabs ()
   "Return list of active tabs in google-chrome."
   (when-let ((file (when (file-exists-p "~/.config/google-chrome/")
@@ -265,49 +576,7 @@ If FILTER-FN passed call it with directories."
           (concat "chrome-session-dump\s" file))
          "\n" t)))))
 
-(defun git-util-call-process (command &rest args)
-  "Execute COMMAND with ARGS synchronously.
-
-Returns (STATUS . OUTPUT) when it is done, where STATUS is the returned error
-code of the process and OUTPUT is its stdout output."
-  (let ((buff (generate-new-buffer command)))
-    (with-current-buffer buff
-      (let ((status))
-        (setq status (apply #'call-process command nil t nil
-                            (flatten-list args)))
-        (let ((result (string-trim (buffer-string))))
-          (if (= 0 status)
-              (prog1 result (kill-current-buffer))
-            (minibuffer-message result) nil))))))
-
-(defun git-util-directory-files (directory &optional nosort)
-  "Return a list of names of files in DIRECTORY excluding \".\" and \"..\".
-
-Names are that are relative to the specified directory.
-
-If NOSORT is non-nil, the list is not sorted--its order is unpredictable.
- Otherwise, the list returned is sorted with string-lessp."
-  (directory-files directory nil
-                   directory-files-no-dot-files-regexp nosort))
-
-(defun git-util-dir-empty-p (directory)
-  "Return t if DIRECTORY is empty."
-  (null (git-util-directory-files directory)))
-
-(defun git-util-non-git-dirs-recoursively (directory &optional match depth)
-  "Return list of non git directories in DIRECTORY that matches MATCH.
-With optional argument DEPTH limit max depth."
-  (git-util-f-dirs-recoursively
-   directory match depth
-   (lambda (it)
-     (let ((result (not
-                    (or
-                     (member (file-name-base it)
-                             '("snap" "node_modules" "share"))
-                     ;; (string-match-p "[0-9]" it)
-                     (file-exists-p (expand-file-name ".git" it))
-                     (file-exists-p (expand-file-name "node_modules" it))))))
-       result))))
+;; url utils
 
 (defun git-util-list-git-urls-from-kill-ring ()
   "Return list of git urls from `kill-ring'."
@@ -338,58 +607,7 @@ With optional argument DEPTH limit max depth."
              (git-util-list-git-urls-from-kill-ring)
              (git-util-list-git-urls-from-minibuffer-history)
              (git-util-list-git-urls-from-chrome-bookmarks)
-             (git-util-read-git-urls-from-chrome-history))))
-
-(defun git-util-exec-in-dir (command project-dir &optional callback)
-  "Execute COMMAND in PROJECT-DIR.
-If PROJECT-DIR doesn't exists, create new.
-Invoke CALLBACK without args."
-  (let ((proc)
-        (buffer (generate-new-buffer (format "*%s*" command))))
-    (progn (switch-to-buffer buffer)
-           (with-current-buffer buffer
-             (if (file-exists-p project-dir)
-                 (setq default-directory project-dir)
-               (mkdir project-dir)
-               (setq default-directory project-dir))
-             (setq proc (start-process-shell-command
-                         (nth 0
-                              (split-string command))
-                         buffer command))
-             (shell-command-save-pos-or-erase)
-             (shell-mode)
-             (view-mode +1))
-           (set-process-sentinel
-            proc
-            (lambda (process _state)
-              (let ((output (with-current-buffer
-                                (process-buffer process)
-                              (buffer-string))))
-                (kill-buffer (process-buffer process))
-                (if (= (process-exit-status process) 0)
-                    (progn
-                      (message "finished")
-                      (if callback
-                          (funcall callback)
-                        (dired project-dir)))
-                  (user-error (format "%s\n%s" command output))))))
-           (set-process-filter proc #'comint-output-filter))))
-
-(defun git-util-f-parent (path)
-  "Return the parent directory to PATH without slash."
-  (let ((parent (file-name-directory
-                 (directory-file-name
-                  (expand-file-name path default-directory)))))
-    (when (and (file-exists-p path)
-               (file-exists-p parent)
-               (not (equal
-                     (file-truename (directory-file-name
-                                     (expand-file-name path)))
-                     (file-truename (directory-file-name
-                                     (expand-file-name parent))))))
-      (if (file-name-absolute-p path)
-          (directory-file-name parent)
-        (file-relative-name parent)))))
+             (git-util-chrome-git-urls-from-chrome-history))))
 
 (defun git-util-https-url-p (url)
   "Return t if URL string is githost with https protocol."
@@ -404,43 +622,13 @@ Invoke CALLBACK without args."
    (concat "git@" git-util-host-regexp)
    url))
 
-(defun git-util-author ()
-  "Return current user name from git config."
-  (git-util-call-process "git" "config" "user.name"))
-
 (defun git-util-config (&rest args)
   "Exec git config with ARGS."
   (apply #'git-util-call-process "git" (flatten-list (list "config" args))))
 
-(defun git-util-read-dir (prompt basename)
-  "Read a new directory with PROMPT and BASENAME."
-  (let* ((dir-files (git-util-directory-files default-directory))
-         (default-variants
-          (mapcar
-           (lambda (dir)
-             (if (file-exists-p
-                  (expand-file-name basename dir))
-                 (let ((count 0)
-                       (name basename))
-                   (while (and (file-exists-p
-                                (expand-file-name name dir))
-                               (not (git-util-dir-empty-p
-                                     (expand-file-name name dir))))
-                     (setq count (1+ count))
-                     (setq name (format "%s-%s"
-                                        (replace-regexp-in-string
-                                         "-[0-9]+$" "" name)
-                                        count)))
-                   (expand-file-name name dir))
-               (expand-file-name basename dir)))
-           (git-util-guess-repos-dirs)))
-         (variants (if (null dir-files)
-                       (append `(,default-directory) default-variants)
-                     default-variants)))
-    (file-name-as-directory
-     (completing-read (or prompt "Directory:\s") variants nil nil
-                      (git-util-f-parent
-                       (car variants))))))
+(defun git-util-config-user-name ()
+  "Return current user name from git config."
+  (git-util-config "user.name"))
 
 (defun git-util-clone-confirm (url)
   "Convert URL to ssh format and read it from minibuffer."
@@ -450,17 +638,6 @@ Invoke CALLBACK without args."
     (if (> (length variants) 1)
         (completing-read "git clone\s" variants)
       (car variants))))
-
-(defun git-util-guess-repos-dirs-find ()
-	"Execute `find' and return list parent directories of git repos."
-  (completing-read "Direcotory:\s"
-                   (funcall
-                    (git-util--compose
-                     delete-dups
-                     (git-util--partial mapcar #'git-util-f-parent)
-                     (git-util--rpartial split-string "\n" t)
-                     shell-command-to-string)
-                    "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\"")))
 
 (defun git-util-alist-ssh-hosts ()
   "Return hosts found in .ssh/config."
@@ -501,9 +678,12 @@ Invoke CALLBACK without args."
 
 (defun git-util-get-authors-emails (directory)
   "Return list of all authors in repository DIRECTORY."
-  (when-let* ((default-directory (vc-git-root directory))
-              (items (git-util-call-process
-                      "git" "log" "--all" "--format=%cE")))
+  (when-let* ((git-root (vc-git-root directory))
+              (items
+               (let ((default-directory (expand-file-name git-root)))
+                 (message "default-directory %s " default-directory)
+                 (git-util-call-process
+                  "git" "log" "--all" "--format=%cE"))))
     (seq-uniq (split-string items
                             "\n"))))
 
@@ -537,16 +717,6 @@ Invoke CALLBACK without args."
   (let ((default-directory directory))
     (git-util-melpa-current-recipe)))
 
-(defun git-util-get-dirs-with-author ()
-  "Read git repository of current author or all."
-  (let ((author (git-util-config "user.email")))
-    (completing-read "Repository: "
-                     (git-util-get-git-repos)
-                     (when author
-                       (git-util--compose
-                        (apply-partially #'member author)
-                        git-util-get-authors-emails)))))
-
 (defun git-util-repo-status (directory)
   "Return git status for DIRECTORY."
   (when-let ((default-directory directory))
@@ -569,63 +739,8 @@ Invoke CALLBACK without args."
 (defun git-util-straight-uncommitted-repos ()
   "Return list of modified repo in straight repos directory."
   (when (fboundp 'straight--repos-dir)
-    (seq-filter #'git-util-repo-modified-p (git-util-get-git-repos
+    (seq-filter #'git-util-repo-modified-p (git-util-f-get-git-repos
                                           (straight--repos-dir)))))
-
-(defun git-util-get-git-repos (&optional dir)
-  "Return list of git repositories in DIR or home directory."
-  (or
-   (let ((command (seq-find #'executable-find
-                            '("fdfind" "fd" "find"))))
-     (pcase command
-       ((or "fd" "fdfind")
-        (funcall
-         (git-util--compose
-          (git-util--partial 'mapcar 'km-f-parent-dir)
-          (git-util--rpartial split-string "\n" t)
-          shell-command-to-string
-          (git-util--rpartial string-join "\s"))
-         (list command
-               (concat "--color=never -HI --max-depth 5 -t d -g '.git' -E Dropbox -E node_modules -E .cache -E .local -E .nvm . "
-                       (or dir "~/")))))
-       ("find" (funcall
-                (git-util--compose
-                 (git-util--rpartial split-string "\n" t)
-                 shell-command-to-string)
-                "find " (or dir "~/") " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
-   (nconc
-    (list (expand-file-name (or dir "~/")))
-    (git-util-non-git-dirs-recoursively
-     (or dir "~/") "^[^\\.]"))))
-
-(defun git-util-guess-repos-dirs ()
-  "Execute `fdfind' and return list parent directories of git repos."
-  (or
-   (let ((command (seq-find #'executable-find
-                            '("fdfind" "fd" "find"))))
-     (pcase command
-       ((or "fd" "fdfind")
-        (funcall
-         (git-util--compose
-          delete-dups
-          (git-util--partial mapcar (git-util--compose
-                                     git-util-f-parent git-util-f-parent))
-          (git-util--rpartial split-string "\n" t)
-          shell-command-to-string
-          (git-util--rpartial string-join "\s"))
-         (list command
-               "--max-depth 4 --color=never -H -t d -g '.git' -E node_modules -E .cache -E .local -E .nvm . ~/")))
-       ("find" (funcall
-                (git-util--compose
-                 delete-dups
-                 (git-util--partial mapcar #'git-util-f-parent)
-                 (git-util--rpartial split-string "\n" t)
-                 shell-command-to-string)
-                "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
-   (nconc
-    (list (expand-file-name "~/"))
-    (git-util-non-git-dirs-recoursively
-     "~/" "^[^\\.]"))))
 
 (defun git-util-npm-seach-package-info (name)
   "Search NAME with npm and return alist with package info."
@@ -638,61 +753,6 @@ Invoke CALLBACK without args."
     (seq-find (lambda (cell) (equal name (alist-get 'name cell)))
               alist)))
 
-;;;###autoload
-(defun git-util-clone-npm-repo ()
-  "Clone repository of npm package."
-  (interactive)
-  (require 'ivy-yarn nil t)
-  (when-let* ((result (when (fboundp 'ivy-yarn-read-new-dependency)
-                        (ivy-yarn-read-new-dependency)))
-              (found (git-util-npm-seach-package-info result)))
-    (let ((repo (alist-get 'repository (alist-get 'links found))))
-      (git-util-clone-repo repo))))
-
-(defun git-util-clone-read-url ()
-	"Read url for git cloning."
-  (let ((candidates
-         (delete-dups (mapcar #'git-util-normalize-https-url
-                              (git-util-url-get-candidates)))))
-    (completing-read
-     "Clone\s" candidates (lambda (it) (and it
-                                       (null (string-match-p "\\?" it))))
-     nil)))
-
-;;;###autoload
-(defun git-util-clone-repo (&optional url)
-  "Clone repository at URL into TARGET-DIR or `km-download-default-repo-dir'."
-  (interactive)
-  (if-let* ((repo-url (git-util-clone-confirm
-                       (or url
-                           (git-util-clone-read-url))))
-            (basename (file-name-base repo-url))
-            (project-dir (git-util-read-dir
-                          (format "Clone %s to " basename) basename)))
-      (let ((command (read-string "" (string-join
-                                      (list "git" "clone" repo-url
-                                            project-dir)
-                                      "\s"))))
-        (setq project-dir (expand-file-name
-                           (car (reverse (split-string command)))))
-        (git-util-exec-in-dir command project-dir))
-    (message "Cannot clone")))
-
-;;;###autoload
-(defun git-util-compose-while-not-nil (&rest functions)
-  "Return right-to-left composition from FUNCTIONS."
-  (let ((fn))
-    (setq functions (reverse functions))
-    (setq fn (pop functions))
-    (lambda (&rest args)
-      (let ((arg (unless (null (flatten-list args))
-                   (apply fn args))))
-        (while (setq fn (unless (null arg)
-                          (pop functions)))
-          (let ((res (apply fn (list arg))))
-            (setq arg res)))
-        arg))))
-
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
   (when-let ((urlobj (when (and url
@@ -701,7 +761,7 @@ Invoke CALLBACK without args."
     (when-let ((host (url-host urlobj))
                (reponame (funcall
                           (git-util-compose-while-not-nil
-                           (git-util--rpartial 'km-f-change-ext "git")
+                           (git-util--rpartial git-util-f-change-ext "git")
                            (git-util--rpartial 'string-join "/")
                            (git-util--partial
                             'km-apply-when
@@ -725,7 +785,7 @@ With optional argument SSH-HOST also replace host."
     (when-let ((host (url-host urlobj))
                (reponame (funcall
                           (git-util-compose-while-not-nil
-                           (git-util--rpartial 'km-f-change-ext "git")
+                           (git-util--rpartial 'git-util-f-change-ext "git")
                            (git-util--rpartial 'string-join "/")
                            (git-util--partial
                             'km-apply-when
@@ -776,6 +836,82 @@ Default value for DIRECTORY is `default-directory'."
         (git-util-call-process "git" "rev-parse" "--abbrev-ref" "HEAD"))
     (git-util-call-process "git" "rev-parse" "--abbrev-ref" "HEAD")))
 
+(defun git-util-jira-retrieve-issue-key-from-branch (str)
+	"Retrieve jira issue from STR."
+  (when-let ((re "[[:upper:]]+-[[:digit:]]+"))
+    (when (string-match-p re str)
+      (replace-regexp-in-string
+       (concat ".*?\\(" re "\\).*")
+       "\\1"
+       str))))
+
+(defvar jiralib-url)
+(defun git-util-jira-commit-message-setup ()
+	"Try to insert template with jira template."
+  (require 'jiralib nil t)
+  (when (and (bound-and-true-p jiralib-url)
+             (string-prefix-p "https://" jiralib-url))
+    (when-let* ((branch (git-util-current-branch default-directory))
+                (issue-key (git-util-jira-retrieve-issue-key-from-branch
+                            branch))
+                (url (concat
+                      "[" issue-key "]" "("
+                      (replace-regexp-in-string "/$" ""
+                                                jiralib-url)
+                      "/browse/"
+                      issue-key
+                      ")"))
+                (title (format "%s:" issue-key)))
+      (unless (save-excursion
+                (re-search-forward
+                 (regexp-quote title) nil t 1))
+        (insert title)
+        (save-excursion
+          (end-of-line)
+          (newline-and-indent 2)
+          (insert (format "%s:" url))
+          (indent-for-tab-command))))))
+
+;;;###autoload
+(defun git-util-clone-npm-repo ()
+  "Clone repository of npm package."
+  (interactive)
+  (require 'ivy-yarn nil t)
+  (when-let* ((result (when (fboundp 'ivy-yarn-read-new-dependency)
+                        (ivy-yarn-read-new-dependency)))
+              (found (git-util-npm-seach-package-info result)))
+    (let ((repo (alist-get 'repository (alist-get 'links found))))
+      (git-util-clone-repo repo))))
+
+(defun git-util-clone-read-url ()
+	"Read url for git cloning."
+  (let ((candidates
+         (delete-dups (mapcar #'git-util-normalize-https-url
+                              (git-util-url-get-candidates)))))
+    (completing-read
+     "Clone\s" candidates (lambda (it) (and it
+                                       (null (string-match-p "\\?" it))))
+     nil)))
+
+;;;###autoload
+(defun git-util-clone-repo (&optional url)
+  "Clone repository at URL."
+  (interactive)
+  (if-let* ((repo-url (git-util-clone-confirm
+                       (or url
+                           (git-util-clone-read-url))))
+            (basename (file-name-base repo-url))
+            (project-dir (git-util-read-dir
+                          (format "Clone %s to " basename) basename)))
+      (let ((command (read-string "" (string-join
+                                      (list "git" "clone" repo-url
+                                            project-dir)
+                                      "\s"))))
+        (setq project-dir (expand-file-name
+                           (car (reverse (split-string command)))))
+        (git-util-exec-in-dir command project-dir))
+    (message "Cannot clone")))
+
 ;;;###autoload
 (defun git-util-change-remote-to-ssh ()
   "Switch remote urLs from HTTPS to SSH."
@@ -796,42 +932,6 @@ Default value for DIRECTORY is `default-directory'."
                  new-url)
            "\s"))))
     (message "No remotes found")))
-
-(defun git-util-retrieve-issue-key-from-branch (str)
-	"Retrieve jira issue from STR."
-  (when-let ((re "[[:upper:]]+-[[:digit:]]+"))
-    (when (string-match-p re str)
-      (replace-regexp-in-string
-       (concat ".*?\\(" re "\\).*")
-       "\\1"
-       str))))
-
-(defvar jiralib-url)
-(defun git-util-commit-jira-message-setup ()
-	"Try to insert template with jira template."
-  (require 'jiralib nil t)
-  (when (and (bound-and-true-p jiralib-url)
-             (string-prefix-p "https://" jiralib-url))
-    (when-let* ((branch (git-util-current-branch default-directory))
-                (issue-key (git-util-retrieve-issue-key-from-branch
-                            branch))
-                (url (concat
-                      "[" issue-key "]" "("
-                      (replace-regexp-in-string "/$" ""
-                                                jiralib-url)
-                      "/browse/"
-                      issue-key
-                      ")"))
-                (title (format "%s:" issue-key)))
-      (unless (save-excursion
-                (re-search-forward
-                 (regexp-quote title) nil t 1))
-        (insert title)
-        (save-excursion
-          (end-of-line)
-          (newline-and-indent 2)
-          (insert (format "%s:" url))
-          (indent-for-tab-command))))))
 
 (provide 'git-util)
 ;;; git-util.el ends here
