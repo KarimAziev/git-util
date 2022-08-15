@@ -313,7 +313,7 @@ The only one exception is made for `user-emacs-directory'."
                         shell-command-to-string)
                        "find " directory " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
           (nconc
-           (list (expand-file-name "~/"))
+           (list (expand-file-name directory))
            (git-util-f-non-git-dirs-recoursively
             directory "^[^\\.]")))))
     (delete-dups (delq nil dirs))))
@@ -652,7 +652,8 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-config (&rest args)
   "Exec git config with ARGS."
-  (apply #'git-util-call-process "git" (flatten-list (list "config" args))))
+  (apply #'git-util-call-process "git"
+         (delq nil (flatten-list (list "config" args)))))
 
 (defun git-util-config-user-name ()
   "Return current user name from git config."
@@ -726,6 +727,18 @@ With optional argument DEPTH limit max depth."
                (or (git-util-ssh-to-https url)
                    url)))
     (browse-url url)))
+
+(defun git-util-url-to-recipe (url)
+  "Return plist of current git URL as straight recipe :repo, :type and :host."
+  (when-let* ((urlobj (url-generic-parse-url (or (git-util-ssh-to-https url)
+                                                 url)))
+              (host (url-host urlobj))
+              (filename (url-filename urlobj))
+              (base-name (file-name-base host)))
+    `(:repo ,(replace-regexp-in-string
+              "^/\\|[\\.]git$" "" filename)
+            :type git
+            :host ,(intern base-name))))
 
 (defun git-util-melpa-current-recipe ()
   "Return plist of current git repo as straight recipe :repo, :type and :host."
