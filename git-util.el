@@ -145,10 +145,12 @@ code of the process and OUTPUT is its stdout output."
         (let ((result (string-trim (buffer-string))))
           (if (= 0 status)
               (prog1 result (kill-current-buffer))
-            (minibuffer-message "Error %s in %s: %s" command result
-                                (when default-directory
-                                  (abbreviate-file-name
-                                   default-directory)))
+            (let ((command-with-args (concat command "\s" (string-join (delq nil (flatten-list args)) "\s"))))
+              (message "Error %s in %s: %s" command-with-args
+                       (when default-directory
+                         (abbreviate-file-name
+                          default-directory))
+                       result))
             nil))))))
 
 (defun git-util-exec-in-dir (command project-dir &optional callback)
@@ -177,7 +179,8 @@ Invoke CALLBACK without args."
                                 (process-buffer process)
                               (buffer-string))))
                 (kill-buffer (process-buffer process))
-                (if (= (process-exit-status process) 0)
+                (if (= (process-exit-status process)
+                       0)
                     (progn
                       (message "finished")
                       (if callback
@@ -234,7 +237,8 @@ The only one exception is made for `user-emacs-directory'."
       (let ((len (length (file-name-as-directory
                           (expand-file-name directory)))))
         (mapcar
-         (git-util--rpartial substring len) dirs)))))
+         (git-util--rpartial substring len)
+         dirs)))))
 
 (defun git-util-shell-command-to-list (command &rest args)
   "Apply shell COMMAND with ARGS and return list of lines from output."
@@ -245,7 +249,8 @@ The only one exception is made for `user-emacs-directory'."
   "Return flags with non-hidden directories in DIRECTORY to search with `fd'."
   (unless directory (setq directory "~/"))
   (let ((dirs (git-util-f-non-hidden-dirs directory t)))
-    (mapcan (lambda (it) (list "--search-path" it))
+    (mapcan (lambda (it)
+              (list "--search-path" it))
             dirs)))
 
 (defun git-util-fdfind-get-all-git-repos (&optional directory)
@@ -282,9 +287,14 @@ The only one exception is made for `user-emacs-directory'."
                                                   (or directory "~/")))
                                            (list "-x" "dirname" "{//}" ))))))
       (insert result)
-      (shell-command-on-region (point-min) (point-max) "sort" buff)
-      (shell-command-on-region (point-min) (point-max) "uniq" buff)
-      (split-string (buffer-substring-no-properties (point-min) (point-max))
+      (shell-command-on-region (point-min)
+                               (point-max)
+                               "sort" buff)
+      (shell-command-on-region (point-min)
+                               (point-max)
+                               "uniq" buff)
+      (split-string (buffer-substring-no-properties (point-min)
+                                                    (point-max))
                     "\n" t))))
 
 (defun git-util-f-get-git-repos (&optional directory)
@@ -383,7 +393,8 @@ The only one exception is made for `user-emacs-directory'."
 
 (defun git-util-f-change-ext (file new-ext)
   "Replace extension of FILE with NEW-EXT."
-  (concat (file-name-sans-extension file) "." new-ext))
+  (concat (file-name-sans-extension file)
+          "." new-ext))
 
 (defun git-util-f-guess-repos-dirs-find ()
 	"Execute `find' and return list parent directories of git repos."
@@ -448,10 +459,12 @@ With optional argument DEPTH limit max depth."
                (expand-file-name basename dir)))
            (git-util-f-guess-repos-dirs)))
          (variants (if (null dir-files)
-                       (append `(,default-directory) default-variants)
+                       (append `(,default-directory)
+                               default-variants)
                      default-variants)))
     (file-name-as-directory
-     (completing-read (or prompt "Directory:\s") variants nil nil
+     (completing-read (or prompt "Directory:\s")
+                      variants nil nil
                       (git-util-f-parent
                        (car variants))))))
 
@@ -517,7 +530,8 @@ With optional argument DEPTH limit max depth."
           (when (listp current)
             (when-let ((url (plist-get current :url)))
               (when (string-match-p url git-util-host-regexp)
-                (setq children (push (plist-get current :url) children)))))))
+                (setq children (push (plist-get current :url)
+                                     children)))))))
       children)))
 
 (defun git-util-chrome-git-urls-from-chrome-history ()
@@ -545,7 +559,8 @@ With optional argument DEPTH limit max depth."
           (let (result)
             (goto-char (point-min))
             ;; -ascii delimited by 0x1F and 0x1E
-            (while (re-search-forward (rx (group (+? anything)) "\x1e") nil t)
+            (while (re-search-forward (rx (group (+? anything)) "\x1e")
+                                      nil t)
               (let* ((parts (split-string (match-string 1) "\x1f"))
                      (url (car parts)))
                 (when (string-match-p git-util-host-regexp url)
@@ -607,7 +622,8 @@ With optional argument DEPTH limit max depth."
  Otherwise return nil."
   (cond ((stringp item)
          (let ((str (seq-copy item)))
-           (set-text-properties 0 (length str) nil str)
+           (set-text-properties 0 (length str)
+                                nil str)
            str))
         ((and item (symbolp item))
          (symbol-name item))
@@ -662,9 +678,11 @@ With optional argument DEPTH limit max depth."
 (defun git-util-clone-confirm (url)
   "Convert URL to ssh format and read it from minibuffer."
   (let ((variants (git-util-get-ssh-variants
-                   (if (git-util-ssh-url-p url) url
+                   (if (git-util-ssh-url-p url)
+                       url
                      (git-util-url-https-to-ssh url)))))
-    (if (> (length variants) 1)
+    (if (> (length variants)
+           1)
         (completing-read "git clone\s" variants)
       (car variants))))
 
@@ -680,7 +698,8 @@ With optional argument DEPTH limit max depth."
                 nil t 1)
           (let ((host (match-string-no-properties 2))
                 (hostname (match-string-no-properties 3)))
-            (push (cons host hostname) alist)))
+            (push (cons host hostname)
+                  alist)))
         alist))))
 
 (defun git-util-get-ssh-variants (ssh-url)
@@ -696,14 +715,18 @@ With optional argument DEPTH limit max depth."
                          (string-trim (buffer-substring-no-properties
                                        end
                                        (point-max))))))))
-    (setq local-alist (seq-filter (lambda (it) (equal
+    (setq local-alist (seq-filter (lambda (it)
+                                    (equal
                                            (car cell)
                                            (cdr it)))
                                   local-alist))
     (seq-uniq
      (append
       (list ssh-url)
-      (mapcar (lambda (it) (concat "git@" (car it) (cdr cell))) local-alist)))))
+      (mapcar (lambda (it)
+                (concat "git@" (car it)
+                        (cdr cell)))
+              local-alist)))))
 
 (defun git-util-get-authors-emails (directory)
   "Return list of all authors in repository DIRECTORY."
@@ -735,10 +758,13 @@ With optional argument DEPTH limit max depth."
               (host (url-host urlobj))
               (filename (url-filename urlobj))
               (base-name (file-name-base host)))
-    `(:repo ,(replace-regexp-in-string
+    `(:repo
+      ,(replace-regexp-in-string
               "^/\\|[\\.]git$" "" filename)
-            :type git
-            :host ,(intern base-name))))
+            :type
+            git
+            :host
+            ,(intern base-name))))
 
 (defun git-util-melpa-current-recipe ()
   "Return plist of current git repo as straight recipe :repo, :type and :host."
@@ -748,10 +774,12 @@ With optional argument DEPTH limit max depth."
                                                  url)))
               (host (url-host urlobj))
               (filename (url-filename urlobj)))
-    (list :repo (replace-regexp-in-string
+    (list :repo
+          (replace-regexp-in-string
                  "^/\\|[\\.]git$" "" filename)
           :type "git"
-          :host (file-name-base host))))
+          :host
+          (file-name-base host))))
 
 (defun git-util-straight-recipe-in-dir (directory)
   "Return plist of git repo in DIRECTORY as straight recipe."
@@ -790,7 +818,8 @@ With optional argument DEPTH limit max depth."
               (alist (json-read-from-string
                       (shell-command-to-string
                        (concat "npm search --json " name)))))
-    (seq-find (lambda (cell) (equal name (alist-get 'name cell)))
+    (seq-find (lambda (cell)
+                (equal name (alist-get 'name cell)))
               alist)))
 
 (defun git-util-normalize-https-url (url)
@@ -806,7 +835,8 @@ With optional argument DEPTH limit max depth."
                            (git-util--partial
                             'km-apply-when
                             (git-util--compose
-                             (apply-partially #'<= 2) 'length)
+                             (apply-partially #'<= 2)
+                             'length)
                             (git-util--rpartial 'seq-take 2))
                            (git-util--rpartial 'split-string "/")
                            (apply-partially
@@ -830,7 +860,8 @@ With optional argument SSH-HOST also replace host."
                            (git-util--partial
                             'km-apply-when
                             (git-util--compose
-                             (apply-partially #'<= 2) 'length)
+                             (apply-partially #'<= 2)
+                             'length)
                             (git-util--rpartial 'seq-take 2))
                            (git-util--rpartial 'split-string "/")
                            (apply-partially
@@ -838,7 +869,8 @@ With optional argument SSH-HOST also replace host."
                             "^/\\|/$" "")
                            'url-filename)
                           urlobj)))
-      (string-trim (concat "git@" (or ssh-host host) ":" reponame)))))
+      (string-trim (concat "git@" (or ssh-host host)
+                           ":" reponame)))))
 
 (defun git-util-ssh-to-https (ssh-remote)
 	"Convert SSH-REMOTE to https url."
@@ -863,7 +895,8 @@ With optional argument SSH-HOST also replace host."
                                   '("remote" "-v")))
                   (string-trim (buffer-string))))))
     (seq-uniq
-     (mapcar (lambda (l) (let ((parts (split-string l)))
+     (mapcar (lambda (l)
+               (let ((parts (split-string l)))
                       (cons (car parts)
                             (cadr parts))))
              (split-string remotes "\n" t)))))
@@ -904,7 +937,8 @@ Default value for DIRECTORY is `default-directory'."
                 (title (format "%s:" issue-key)))
       (unless (save-excursion
                 (re-search-forward
-                 (regexp-quote title) nil t 1))
+                 (regexp-quote title)
+                 nil t 1))
         (insert title)
         (save-excursion
           (end-of-line)
@@ -929,7 +963,8 @@ Default value for DIRECTORY is `default-directory'."
          (delete-dups (mapcar #'git-util-normalize-https-url
                               (git-util-url-get-candidates)))))
     (completing-read
-     "Clone\s" candidates (lambda (it) (and it
+     "Clone\s" candidates (lambda (it)
+                            (and it
                                        (null (string-match-p "\\?" it))))
      nil)))
 
@@ -942,7 +977,8 @@ Default value for DIRECTORY is `default-directory'."
                            (git-util-clone-read-url))))
             (basename (file-name-base repo-url))
             (project-dir (git-util-read-dir
-                          (format "Clone %s to " basename) basename)))
+                          (format "Clone %s to " basename)
+                          basename)))
       (let ((command (read-string "" (string-join
                                       (list "git" "clone" repo-url
                                             project-dir)
@@ -957,9 +993,11 @@ Default value for DIRECTORY is `default-directory'."
   "Switch remote urLs from HTTPS to SSH."
   (interactive)
   (if-let ((remotes (git-util-remotes-alist)))
-      (let* ((cell (if (> (length remotes) 1)
+      (let* ((cell (if (> (length remotes)
+                          1)
                        (rassoc
-                        (completing-read "Remote" (mapcar #'cdr remotes) nil t)
+                        (completing-read "Remote" (mapcar #'cdr remotes)
+                                         nil t)
                         remotes)
                      (car remotes)))
              (new-url (string-trim
