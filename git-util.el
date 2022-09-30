@@ -30,10 +30,16 @@
 ;;; Code:
 
 
-(require 'vc-git)
-(require 'url-parse)
-(require 'shell)
-(require 'comint)
+
+
+
+(declare-function vc-git-root "vc-git")
+(declare-function shell-mode "shell-mode")
+(declare-function comint-output-filter "comint")
+(declare-function json-read-from-string "json")
+(declare-function json-read-file "json")
+(declare-function url-host "url-parse")
+(declare-function url-filename "url-parse")
 
 (defvar git-util-host-regexp
   (concat "\\("
@@ -157,6 +163,8 @@ code of the process and OUTPUT is its stdout output."
   "Execute COMMAND in PROJECT-DIR.
 If PROJECT-DIR doesn't exists, create new.
 Invoke CALLBACK without args."
+  (require 'shell)
+  (require 'comint)
   (let ((proc)
         (buffer (generate-new-buffer (format "*%s*" command))))
     (progn (switch-to-buffer buffer)
@@ -510,7 +518,8 @@ With optional argument DEPTH limit max depth."
          "$USERPROFILE/Local Settings/Application Data/Google/Chrome/User Data/Default/History"))))))
 
 (defun git-util-chrome-bookmarks-read-json-file ()
-	"Chrome bookmarks read json file."
+  "Chrome bookmarks read json file."
+  (require 'json)
   (when-let ((file (git-util-chrome-url-chrome-guess-bookmarks-file))
              (json-object-type 'plist)
              (json-array-type 'list))
@@ -730,6 +739,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-get-authors-emails (directory)
   "Return list of all authors in repository DIRECTORY."
+  (require 'vc-git)
   (when-let* ((git-root (vc-git-root directory))
               (items
                (let ((default-directory (expand-file-name git-root)))
@@ -743,6 +753,7 @@ With optional argument DEPTH limit max depth."
 (defun git-util-visit-remote ()
   "Return plist of current git repo as straight recipe :repo, :type and :host."
   (interactive)
+  (require 'url-parse)
   (when-let ((url (cdar (git-util-remotes-alist))))
     (setq url (replace-regexp-in-string
                "\\.git$"
@@ -753,6 +764,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-url-to-recipe (url)
   "Return plist of current git URL as straight recipe :repo, :type and :host."
+  (require 'url-parse)
   (when-let* ((urlobj (url-generic-parse-url (or (git-util-ssh-to-https url)
                                                  url)))
               (host (url-host urlobj))
@@ -768,18 +780,19 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-melpa-current-recipe ()
   "Return plist of current git repo as straight recipe :repo, :type and :host."
-
+  (require 'url-parse)
   (when-let* ((url (cdar (git-util-remotes-alist)))
               (urlobj (url-generic-parse-url (or (git-util-ssh-to-https url)
                                                  url)))
               (host (url-host urlobj))
               (filename (url-filename urlobj)))
-    (list :repo
-          (replace-regexp-in-string
-                 "^/\\|[\\.]git$" "" filename)
-          :type "git"
-          :host
-          (file-name-base host))))
+    (list
+     :repo
+     (replace-regexp-in-string
+      "^/\\|[\\.]git$" "" filename)
+     :type "git"
+     :host
+     (file-name-base host))))
 
 (defun git-util-straight-recipe-in-dir (directory)
   "Return plist of git repo in DIRECTORY as straight recipe."
@@ -824,6 +837,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
+  (require 'url-parse)
   (when-let ((urlobj (when (and url
                                 (git-util-https-url-p url))
                        (url-generic-parse-url url))))
@@ -849,9 +863,11 @@ With optional argument DEPTH limit max depth."
 (defun git-util-url-https-to-ssh (url &optional ssh-host)
   "Transform URL with https protocol to ssh.
 With optional argument SSH-HOST also replace host."
-  (when-let ((urlobj (when (and url
-                                (git-util-https-url-p url))
-                       (url-generic-parse-url url))))
+  (require 'url-parse)
+  (when-let ((urlobj
+              (when (and url
+                         (git-util-https-url-p url))
+                (url-generic-parse-url url))))
     (when-let ((host (url-host urlobj))
                (reponame (funcall
                           (git-util-compose-while-not-nil
