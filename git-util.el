@@ -253,13 +253,16 @@ The only one exception is made for `user-emacs-directory'."
   (when-let ((result (apply #'git-util-call-process command args)))
     (split-string result "\n")))
 
+(defun git-util-map-search-paths (dirs)
+  "Add fd search-path option to every directory in DIRS."
+  (mapcan (lambda (it)
+            (list "--search-path" it))
+          dirs))
+
 (defun git-util-fdfind-get-repo-search-paths (&optional directory)
   "Return flags with non-hidden directories in DIRECTORY to search with `fd'."
-  (unless directory (setq directory "~/"))
-  (let ((dirs (git-util-f-non-hidden-dirs directory t)))
-    (mapcan (lambda (it)
-              (list "--search-path" it))
-            dirs)))
+  (git-util-map-search-paths
+   (git-util-f-non-hidden-dirs (or directory "~/") t)))
 
 (defun git-util-fdfind-get-all-git-repos (&optional directory)
   "Return flags with directories in DIRECTORY to search with `fd'."
@@ -335,6 +338,27 @@ The only one exception is made for `user-emacs-directory'."
            (git-util-f-non-git-dirs-recoursively
             directory "^[^\\.]")))))
     (delete-dups (delq nil dirs))))
+
+(defun git-util-f-get-git-repos-in-dirs (dirs &rest flags)
+  "Return list of git repositories in DIRS with FLAGS."
+  (or
+   (let ((command (seq-find #'executable-find
+                            '("fdfind" "fd" "find"))))
+     (pcase command
+       ((or "fd" "fdfind")
+        (apply #'git-util-shell-command-to-list
+               "fdfind"
+               '("--color=never"
+                 "--hidden"
+                 "--glob"
+                 ".git"
+                 "-t"
+                 "d")
+               flags
+               (git-util-map-search-paths (mapcar #'expand-file-name
+                                                  dirs))
+               '("-x"
+                 "dirname")))))))
 
 (defun git-util-f-guess-repos-dirs ()
   "Execute `fdfind' and return list parent directories of git repos."
@@ -738,16 +762,37 @@ With optional argument DEPTH limit max depth."
               local-alist)))))
 
 (defun git-util-get-authors-emails (directory)
-  "Return list of all authors in repository DIRECTORY."
+  "Return list of all contributed emails in repository DIRECTORY."
   (require 'vc-git)
   (when-let* ((git-root (vc-git-root directory))
               (items
                (let ((default-directory (expand-file-name git-root)))
-                 (message "default-directory %s " default-directory)
                  (git-util-call-process
                   "git" "log" "--all" "--format=%cE"))))
-    (seq-uniq (split-string items
-                            "\n"))))
+    (seq-uniq (split-string items "\n"))))
+
+(defun git-util-get-authors-names (directory)
+  "Return list of all contributed user names in repository DIRECTORY."
+  (when-let* ((default-directory directory)
+              (output (git-util-call-process "git" "log" "--all" "--format=%cN")))
+    (split-string
+     output
+     "\n" t)))
+
+(defun git-util-get-authors (directory)
+  "Return alist of names and emails contributed to repository DIRECTORY."
+  (when-let* ((default-directory directory)
+              (output (git-util-call-process "git" "shortlog" "-n" "-s" "-e"
+                                             "HEAD")))
+    (mapcar (lambda (line)
+              (let* ((parts (reverse (split-string line nil t)))
+                     (email (pop parts))
+                     (name (string-join (reverse parts) "\s")))
+                (cons (replace-regexp-in-string "^[0-9]+[\s\t]*" "" name)
+                      (replace-regexp-in-string "^<\\|>$" "" email))))
+            (split-string
+             output
+             "\n" t))))
 
 ;;;###autoload
 (defun git-util-visit-remote ()
@@ -793,6 +838,19 @@ With optional argument DEPTH limit max depth."
      :type "git"
      :host
      (file-name-base host))))
+
+(defun git-util-melpa-recipe-in-dir (dir &optional package-name)
+  "Return recipe for PACKAGE-NAME in DIR.
+Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
+  (let* ((recipe (git-util-straight-recipe-in-dir dir))
+         (name (or package-name
+                   (car (last (split-string
+                               (plist-get recipe :repo) "/" t))))))
+    (list (if (stringp name)
+              (intern name)
+            name)
+          :repo (plist-get recipe :repo)
+          :fetcher (intern (plist-get recipe :host)))))
 
 (defun git-util-straight-recipe-in-dir (directory)
   "Return plist of git repo in DIRECTORY as straight recipe."
