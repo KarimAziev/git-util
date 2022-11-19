@@ -53,6 +53,7 @@
           "\\)")
   "Regexp matching common git hosts.")
 
+
 (defcustom git-util-autoinstall-chrome-session-dump nil
   "Whether to install https://github.com/lemnos/chrome-session-dump.
 It is used as source for git url completions."
@@ -362,32 +363,24 @@ The only one exception is made for `user-emacs-directory'."
 
 (defun git-util-f-guess-repos-dirs ()
   "Execute `fdfind' and return list parent directories of git repos."
-  (or
-   (let ((command (seq-find #'executable-find
-                            '("fdfind" "fd" "find"))))
-     (pcase command
-       ((or "fd" "fdfind")
-        (funcall
-         (git-util--compose
-          delete-dups
-          (git-util--partial mapcar (git-util--compose
-                                     git-util-f-parent
-                                     git-util-f-parent))
-          (git-util--rpartial split-string "\n" t)
-          shell-command-to-string
-          (git-util--rpartial string-join "\s"))
-         (list "fdfind" "--color=never --hidden --no-ignore --glob .git -t d")))
-       ("find" (funcall
-                (git-util--compose
-                 delete-dups
-                 (git-util--partial mapcar #'git-util-f-parent)
-                 (git-util--rpartial split-string "\n" t)
-                 shell-command-to-string)
-                "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
-   (nconc
-    (list (expand-file-name "~/"))
-    (git-util-f-non-git-dirs-recoursively
-     "~/" "^[^\\.]"))))
+  (let ((command (seq-find #'executable-find
+                           '("fdfind" "fd" "find"))))
+    (pcase command
+      ((or "fd" "fdfind")
+       (git-util-fdfind-get-all-repos-parents-dir))
+      ("find"
+       (funcall
+        (git-util--compose
+         delete-dups
+         (git-util--partial mapcar #'git-util-f-parent)
+         (git-util--rpartial split-string "\n" t)
+         shell-command-to-string)
+        "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))
+      (_ (or
+          (nconc
+           (list (expand-file-name "~/"))
+           (git-util-f-non-git-dirs-recoursively
+            "~/" "^[^\\.]")))))))
 
 (defun git-util-filter-repos-by-email (email repos-dirs)
   "Return REPOS-DIRS in which EMAIL is member of authors."
