@@ -138,6 +138,21 @@ at the values with which this function was called."
                      `(apply #',fn (append pre-args (list ,@args)))
                    `(apply ,fn (append pre-args (list ,@args))))))))
 
+
+(defmacro git-util-when (pred fn)
+  "Return a function that call FN if the result of calling PRED is non-nil.
+Both PRED and FN are called with one argument.
+If the result of PRED is nil, return the argument as is."
+  (declare (indent defun))
+  `(lambda (arg)
+     (if ,(if (symbolp pred)
+              `(,pred arg)
+            `(funcall ,pred arg))
+         ,(if (symbolp fn)
+              `(,fn arg)
+            `(funcall ,fn arg))
+       arg)))
+
 (defun git-util-call-process (command &rest args)
   "Execute COMMAND with ARGS synchronously.
 
@@ -289,15 +304,16 @@ The only one exception is made for `user-emacs-directory'."
                               "fdfind"
                               (delq nil
                                     (nconc (list "--color=never"
+                                                 "-I"
                                                  "--hidden"
                                                  "--glob"
                                                  ".git"
                                                  "-t"
                                                  "d"
-                                                 "--max-depth" "4"
+                                                 "--max-depth" "5"
                                                  (expand-file-name
                                                   (or directory "~/")))
-                                           (list "-x" "dirname" "{//}" ))))))
+                                           (list "-x" "dirname" "{//}"))))))
       (insert result)
       (shell-command-on-region (point-min)
                                (point-max)
@@ -422,7 +438,7 @@ The only one exception is made for `user-emacs-directory'."
           "." new-ext))
 
 (defun git-util-f-guess-repos-dirs-find ()
-	"Execute `find' and return list parent directories of git repos."
+  "Execute `find' and return list parent directories of git repos."
   (completing-read "Direcotory:\s"
                    (funcall
                     (git-util--compose
@@ -656,7 +672,7 @@ With optional argument DEPTH limit max depth."
         (nil item)))
 
 (defun git-util-url-get-candidates ()
-	"Return list of urls from `kill-ring', buffer, chrome history, bookmarks etc."
+  "Return list of urls from `kill-ring', buffer, chrome history, bookmarks etc."
   (let ((urls (delete nil (nconc
                            (git-util-list-git-urls-from-kill-ring)
                            (git-util-chrome-session-dump-get-active-tabs)
@@ -886,6 +902,7 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
                 (equal name (alist-get 'name cell)))
               alist)))
 
+
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
   (require 'url-parse)
@@ -897,12 +914,11 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
                           (git-util-compose-while-not-nil
                            (git-util--rpartial git-util-f-change-ext "git")
                            (git-util--rpartial 'string-join "/")
-                           (git-util--partial
-                            'km-apply-when
-                            (git-util--compose
-                             (apply-partially #'<= 2)
-                             'length)
-                            (git-util--rpartial 'seq-take 2))
+                           (git-util-when
+                             (git-util--compose
+                              (apply-partially #'<= 2)
+                              length)
+                             (git-util--rpartial 'seq-take 2))
                            (git-util--rpartial 'split-string "/")
                            (apply-partially
                             #'replace-regexp-in-string
@@ -924,12 +940,11 @@ With optional argument SSH-HOST also replace host."
                           (git-util-compose-while-not-nil
                            (git-util--rpartial 'git-util-f-change-ext "git")
                            (git-util--rpartial 'string-join "/")
-                           (git-util--partial
-                            'km-apply-when
-                            (git-util--compose
-                             (apply-partially #'<= 2)
-                             'length)
-                            (git-util--rpartial 'seq-take 2))
+                           (git-util-when
+                             (git-util--compose
+                              (apply-partially #'<= 2)
+                              'length)
+                             (git-util--rpartial 'seq-take 2))
                            (git-util--rpartial 'split-string "/")
                            (apply-partially
                             #'replace-regexp-in-string
@@ -940,7 +955,7 @@ With optional argument SSH-HOST also replace host."
                            ":" reponame)))))
 
 (defun git-util-ssh-to-https (ssh-remote)
-	"Convert SSH-REMOTE to https url."
+  "Convert SSH-REMOTE to https url."
   (with-temp-buffer
     (save-excursion (insert ssh-remote))
     (when (re-search-forward "@" nil t 1)
@@ -977,7 +992,7 @@ Default value for DIRECTORY is `default-directory'."
     (git-util-call-process "git" "rev-parse" "--abbrev-ref" "HEAD")))
 
 (defun git-util-jira-retrieve-issue-key-from-branch (str)
-	"Retrieve jira issue from STR."
+  "Retrieve jira issue from STR."
   (when-let ((re "[[:upper:]]+-[[:digit:]]+"))
     (when (string-match-p re str)
       (replace-regexp-in-string
@@ -987,7 +1002,7 @@ Default value for DIRECTORY is `default-directory'."
 
 (defvar jiralib-url)
 (defun git-util-jira-commit-message-setup ()
-	"Try to insert template with jira template."
+  "Try to insert template with jira template."
   (require 'jiralib nil t)
   (when (and (bound-and-true-p jiralib-url)
              (string-prefix-p "https://" jiralib-url))
@@ -1025,7 +1040,7 @@ Default value for DIRECTORY is `default-directory'."
       (git-util-clone-repo repo))))
 
 (defun git-util-clone-read-url ()
-	"Read url for git cloning."
+  "Read url for git cloning."
   (let ((candidates
          (delete-dups (mapcar #'git-util-normalize-https-url
                               (git-util-url-get-candidates)))))
