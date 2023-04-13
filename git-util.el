@@ -903,28 +903,38 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
               alist)))
 
 
+
+(defun git-util-normalize-url-filename (filename)
+  "Transform FILENAME to git filename."
+  (funcall (git-util-compose-while-not-nil
+            (git-util-when (git-util--compose
+                            not
+                            (apply-partially #'string-suffix-p
+                                             ".git"))
+              (git-util--rpartial concat ".git"))
+            (git-util--rpartial string-join "/")
+            (git-util-when
+              (git-util--compose
+               (apply-partially #'<= 2)
+               length)
+              (git-util--rpartial seq-take 2))
+            (git-util--rpartial split-string "/")
+            (apply-partially
+             #'replace-regexp-in-string
+             "^/\\|/$" ""))
+           filename))
+
+
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
   (require 'url-parse)
-  (when-let ((urlobj (when (and url
-                                (git-util-https-url-p url))
-                       (url-generic-parse-url url))))
+  (when-let ((urlobj
+              (when (and url
+                         (git-util-https-url-p url))
+                (url-generic-parse-url url))))
     (when-let ((host (url-host urlobj))
-               (reponame (funcall
-                          (git-util-compose-while-not-nil
-                           (git-util--rpartial git-util-f-change-ext "git")
-                           (git-util--rpartial 'string-join "/")
-                           (git-util-when
-                             (git-util--compose
-                              (apply-partially #'<= 2)
-                              length)
-                             (git-util--rpartial 'seq-take 2))
-                           (git-util--rpartial 'split-string "/")
-                           (apply-partially
-                            #'replace-regexp-in-string
-                            "^/\\|/$" "")
-                           'url-filename)
-                          urlobj)))
+               (reponame (git-util-normalize-url-filename
+                          (url-filename urlobj))))
       (string-trim (concat "https://" host "/" reponame)))))
 
 (defun git-util-url-https-to-ssh (url &optional ssh-host)
@@ -936,21 +946,8 @@ With optional argument SSH-HOST also replace host."
                          (git-util-https-url-p url))
                 (url-generic-parse-url url))))
     (when-let ((host (url-host urlobj))
-               (reponame (funcall
-                          (git-util-compose-while-not-nil
-                           (git-util--rpartial 'git-util-f-change-ext "git")
-                           (git-util--rpartial 'string-join "/")
-                           (git-util-when
-                             (git-util--compose
-                              (apply-partially #'<= 2)
-                              'length)
-                             (git-util--rpartial 'seq-take 2))
-                           (git-util--rpartial 'split-string "/")
-                           (apply-partially
-                            #'replace-regexp-in-string
-                            "^/\\|/$" "")
-                           'url-filename)
-                          urlobj)))
+               (reponame (git-util-normalize-url-filename
+                          (url-filename urlobj))))
       (string-trim (concat "git@" (or ssh-host host)
                            ":" reponame)))))
 
