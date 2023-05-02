@@ -409,11 +409,56 @@ The only one exception is made for `user-emacs-directory'."
   "Read git repository of current author or all."
   (let ((author (git-util-config "user.email")))
     (completing-read "Repository: "
-                     (git-util-f-get-git-repos)
+                     (git-util-f-get-git-repos (read-directory-name
+                                                "Search repos in"))
                      (when author
                        (git-util--compose
                         (apply-partially #'member author)
                         git-util-get-authors-emails)))))
+
+(defun git-util-with-every-author-straight-dir (fn)
+  "Call FN without args in every straight directory."
+  (require 'straight)
+  (let ((author
+         (let ((default-directory user-emacs-directory))
+           (git-util-config "user.email"))))
+    (dolist (dir (git-util-f-get-git-repos
+                  (when (fboundp 'straight--repos-dir)
+                    (straight--repos-dir))))
+      (when (member author (git-util-get-authors-emails dir))
+        (let ((default-directory dir))
+          (funcall fn))))))
+(defun git-util-straight-url-to-ssh (fn)
+  "Call FN without args in every straight directory."
+  (require 'straight)
+  (git-util-with-every-author-straight-dir
+   (lambda ()
+     (when-let* ((remotes
+                  (git-util-remotes-alist))
+                 (cell (if (>
+                            (length
+                             remotes)
+                            1)
+                           (rassoc
+                            (completing-read
+                             "Remote"
+                             (mapcar
+                              #'cdr
+                              remotes)
+                             nil
+                             t)
+                            remotes)
+                         (car
+                          remotes)))
+                 (new-url (git-util-url-https-to-ssh
+                           (cdr
+                            cell))))
+       (message
+        "Setting %s" new-url)
+       (process-lines "git" "remote"
+                      "set-url"
+                      (car cell)
+                      new-url)))))
 
 (defun git-util-f-parent (path)
   "Return the parent directory to PATH."
