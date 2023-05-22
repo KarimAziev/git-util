@@ -176,10 +176,10 @@ code of the process and OUTPUT is its stdout output."
             nil))))))
 
 (defun git-util-exec-in-dir (command project-dir &optional callback)
-  "Execute COMMAND in PROJECT-DIR.
+	"Execute COMMAND in PROJECT-DIR.
 If PROJECT-DIR doesn't exists, create new.
 Invoke CALLBACK without args."
-  (require 'shell)
+	(require 'shell)
   (require 'comint)
   (let ((proc)
         (buffer (generate-new-buffer (format "*%s*" command))))
@@ -187,7 +187,7 @@ Invoke CALLBACK without args."
            (with-current-buffer buffer
              (if (file-exists-p project-dir)
                  (setq default-directory project-dir)
-               (mkdir project-dir)
+               (mkdir project-dir t)
                (setq default-directory project-dir))
              (setq proc (start-process-shell-command
                          (nth 0
@@ -917,18 +917,10 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
     (git-util-call-process "git" "status")))
 
 (defun git-util-repo-modified-p (directory)
-  "Return non nil if DIRECTORY git status is not up to date."
-  (when-let* ((default-directory directory)
-              (status (git-util-call-process "git" "status"))
-              (status-lines (mapcar #'string-trim
-                                    (split-string status "\n" t))))
-    (or
-     (and (nth 1 status-lines)
-          (not (string-match-p "Your branch is up to date"
-                               (nth 1 status-lines))))
-     (seq-intersection status-lines
-                       '("Changes not staged for commit:"
-                         "Changes to be committed:")))))
+	"Return non nil if DIRECTORY git status is not up to date."
+	(when-let* ((default-directory directory)
+              (status (git-util-call-process "git" "status" "--short")))
+    (not (string-empty-p status))))
 
 (defun git-util-modified-repos-in-dir (directory)
   "Return list of modified repos in DIRECTORY."
