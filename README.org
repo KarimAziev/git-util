@@ -27,17 +27,15 @@ Download repository and it to your load path in your init file:
 *** With use-package and straight
 
 #+begin_src elisp :eval no
-
 (use-package git-util
-	:straight (git-util
-			       :repo "KarimAziev/git-util"
-			       :type git
-			       :host github)
-	:commands (git-util-change-remote-to-ssh
-			       git-util-clone-repo
-			       git-util-clone-npm-repo
-			       git-util-visit-remote))
-
+  :straight (git-util
+             :repo "KarimAziev/git-util"
+             :type git
+             :host github)
+  :commands (git-util-change-remote-to-ssh
+             git-util-clone-repo
+             git-util-clone-npm-repo
+             git-util-visit-remote))
 #+end_src
 
 ** Commands

@@ -29,10 +29,6 @@
 
 ;;; Code:
 
-
-
-
-
 (declare-function vc-git-root "vc-git")
 (declare-function shell-mode "shell-mode")
 (declare-function comint-output-filter "comint")
@@ -53,7 +49,6 @@
           "\\)")
   "Regexp matching common git hosts.")
 
-
 (defcustom git-util-autoinstall-chrome-session-dump nil
   "Whether to install https://github.com/lemnos/chrome-session-dump.
 It is used as source for git url completions."
@@ -63,7 +58,9 @@ It is used as source for git url completions."
 
 (defmacro git-util--pipe (&rest functions)
   "Return left-to-right composition from FUNCTIONS."
-  (declare (debug t) (pure t) (side-effect-free t))
+  (declare (debug t)
+           (pure t)
+           (side-effect-free t))
   `(lambda (&rest args)
      ,@(let ((init-fn (pop functions)))
          (list
@@ -79,7 +76,9 @@ It is used as source for git url completions."
 
 (defmacro git-util--compose (&rest functions)
   "Return right-to-left composition from FUNCTIONS."
-  (declare (debug t) (pure t) (side-effect-free t))
+  (declare (debug t)
+           (pure t)
+           (side-effect-free t))
   `(git-util--pipe ,@(reverse functions)))
 
 (defun git-util-compose-while-not-nil (&rest functions)
@@ -88,31 +87,41 @@ It is used as source for git url completions."
     (setq functions (reverse functions))
     (setq fn (pop functions))
     (lambda (&rest args)
-      (let ((arg (unless (null (flatten-list args))
-                   (apply fn args))))
-        (while (setq fn (unless (null arg)
-                          (pop functions)))
+      (let ((arg
+             (unless (null (flatten-list args))
+               (apply fn args))))
+        (while (setq fn
+                     (unless (null arg)
+                       (pop functions)))
           (let ((res (apply fn (list arg))))
             (setq arg res)))
         arg))))
 
 (defmacro git-util--or (&rest functions)
   "Return an unary function which invoke FUNCTIONS until first non-nil result."
-  (declare (debug t) (pure t) (side-effect-free t))
-  `(lambda (it) (or
-                 ,@(mapcar (lambda (v) (if (symbolp v)
-                                           `(,v it)
-                                         `(funcall ,v it)))
-                           functions))))
+  (declare (debug t)
+           (pure t)
+           (side-effect-free t))
+  `(lambda (it)
+     (or
+      ,@(mapcar (lambda (v)
+                  (if (symbolp v)
+                      `(,v it)
+                    `(funcall ,v it)))
+                functions))))
 
 (defmacro git-util--and (&rest functions)
   "Return an unary function which invoke FUNCTIONS until first nil result."
-  (declare (debug t) (pure t) (side-effect-free t))
-  `(lambda (it) (and
-                 ,@(mapcar (lambda (v) (if (symbolp v)
-                                           `(,v it)
-                                         `(funcall ,v it)))
-                           functions))))
+  (declare (debug t)
+           (pure t)
+           (side-effect-free t))
+  `(lambda (it)
+     (and
+      ,@(mapcar (lambda (v)
+                  (if (symbolp v)
+                      `(,v it)
+                    `(funcall ,v it)))
+                functions))))
 
 (defmacro git-util--partial (fn &rest args)
   "Return a partial application of FN to left-hand ARGS.
@@ -138,12 +147,12 @@ at the values with which this function was called."
                      `(apply #',fn (append pre-args (list ,@args)))
                    `(apply ,fn (append pre-args (list ,@args))))))))
 
-
 (defmacro git-util-when (pred fn)
   "Return a function that call FN if the result of calling PRED is non-nil.
 Both PRED and FN are called with one argument.
 If the result of PRED is nil, return the argument as is."
-  (declare (indent defun))
+  (declare
+   (indent defun))
   `(lambda (arg)
      (if ,(if (symbolp pred)
               `(,pred arg)
@@ -167,7 +176,11 @@ code of the process and OUTPUT is its stdout output."
         (let ((result (string-trim (buffer-string))))
           (if (= 0 status)
               (prog1 result (kill-current-buffer))
-            (let ((command-with-args (concat command "\s" (string-join (delq nil (flatten-list args)) "\s"))))
+            (let ((command-with-args (concat command "\s" (string-join
+                                                           (delq nil
+                                                                 (flatten-list
+                                                                  args))
+                                                           "\s"))))
               (message "Error %s in %s: %s" command-with-args
                        (when default-directory
                          (abbreviate-file-name
@@ -176,10 +189,10 @@ code of the process and OUTPUT is its stdout output."
             nil))))))
 
 (defun git-util-exec-in-dir (command project-dir &optional callback)
-	"Execute COMMAND in PROJECT-DIR.
+  "Execute COMMAND in PROJECT-DIR.
 If PROJECT-DIR doesn't exists, create new.
 Invoke CALLBACK without args."
-	(require 'shell)
+  (require 'shell)
   (require 'comint)
   (let ((proc)
         (buffer (generate-new-buffer (format "*%s*" command))))
@@ -248,8 +261,8 @@ If FILTER-FN passed call it with directories."
   (if full
       (mapcar (git-util--rpartial
                expand-file-name directory)
-              (directory-files directory nil "^[^\\.]" ))
-    (directory-files directory nil "^[^\\.]" )))
+              (directory-files directory nil "^[^\\.]"))
+    (directory-files directory nil "^[^\\.]")))
 
 (defun git-util-f-non-hidden-dirs (directory &optional full)
   "Return absolute (with FULL) or relative non-hidden directories in DIRECTORY.
@@ -345,11 +358,13 @@ The only one exception is made for `user-emacs-directory'."
                       (git-util-fdfind-get-repo-search-paths directory)
                       '("-x"
                         "dirname")))
-              ("find" (funcall
-                       (git-util--compose
-                        (git-util--rpartial split-string "\n" t)
-                        shell-command-to-string)
-                       "find " directory " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
+              ("find"
+               (funcall
+                (git-util--compose
+                 (git-util--rpartial split-string "\n" t)
+                 shell-command-to-string)
+                "find " directory
+                " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
           (nconc
            (list (expand-file-name directory))
            (git-util-f-non-git-dirs-recoursively
@@ -428,37 +443,7 @@ The only one exception is made for `user-emacs-directory'."
       (when (member author (git-util-get-authors-emails dir))
         (let ((default-directory dir))
           (funcall fn))))))
-(defun git-util-straight-url-to-ssh (fn)
-  "Call FN without args in every straight directory."
-  (require 'straight)
-  (git-util-with-every-author-straight-dir
-   (lambda ()
-     (when-let* ((remotes
-                  (git-util-remotes-alist))
-                 (cell (if (>
-                            (length
-                             remotes)
-                            1)
-                           (rassoc
-                            (completing-read
-                             "Remote"
-                             (mapcar
-                              #'cdr
-                              remotes)
-                             nil
-                             t)
-                            remotes)
-                         (car
-                          remotes)))
-                 (new-url (git-util-url-https-to-ssh
-                           (cdr
-                            cell))))
-       (message
-        "Setting %s" new-url)
-       (process-lines "git" "remote"
-                      "set-url"
-                      (car cell)
-                      new-url)))))
+
 
 (defun git-util-f-parent (path)
   "Return the parent directory to PATH."
@@ -628,8 +613,9 @@ With optional argument DEPTH limit max depth."
           (git-util-chrome-url-chrome-guess-history-file)))
   (when (or (null git-util-chrome-url-chrome-history-file)
             (not (file-exists-p git-util-chrome-url-chrome-history-file)))
-    (user-error "'%s' doesn't exist, reset `git-util-chrome-url-chrome-history-file'"
-                git-util-chrome-url-chrome-history-file))
+    (user-error
+     "'%s' doesn't exist, reset `git-util-chrome-url-chrome-history-file'"
+     git-util-chrome-url-chrome-history-file))
   (with-temp-buffer
     (erase-buffer)
     (let ((tmp (make-temp-name
@@ -657,6 +643,7 @@ With optional argument DEPTH limit max depth."
         (error "Command sqlite3 failed: %s" (buffer-string))))))
 
 (defvar git-util-chrome-sesssion-dump-buffer "*chrome-session-dump*")
+
 (defun git-util-chrome-install-session-dump ()
   "Install chrome-sesion-dump to /usr/bin/chrome-session-dump."
   (let ((default-directory "/sudo::")
@@ -667,8 +654,9 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-chrome-session-dump-get-active-tabs ()
   "Return list of active tabs in google-chrome."
-  (when-let ((file (when (file-exists-p "~/.config/google-chrome/")
-                     "~/.config/google-chrome/")))
+  (when-let ((file
+              (when (file-exists-p "~/.config/google-chrome/")
+                "~/.config/google-chrome/")))
     (if (and git-util-autoinstall-chrome-session-dump
              (not (get-buffer git-util-chrome-sesssion-dump-buffer))
              (not (executable-find "chrome-session-dump")))
@@ -793,8 +781,9 @@ With optional argument DEPTH limit max depth."
   "Return variants of git ssh for SSH-URL."
   (let* ((local-alist (git-util-alist-ssh-hosts))
          (cell (with-temp-buffer
-                 (save-excursion (insert (replace-regexp-in-string "^git@" ""
-                                                                   ssh-url)))
+                 (save-excursion
+                   (insert (replace-regexp-in-string "^git@" ""
+                                                     ssh-url)))
                  (let ((beg (point))
                        (end))
                    (setq end (re-search-forward git-util-host-regexp nil t 1))
@@ -804,8 +793,8 @@ With optional argument DEPTH limit max depth."
                                        (point-max))))))))
     (setq local-alist (seq-filter (lambda (it)
                                     (equal
-                                           (car cell)
-                                           (cdr it)))
+                                     (car cell)
+                                     (cdr it)))
                                   local-alist))
     (seq-uniq
      (append
@@ -827,8 +816,9 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-get-authors-names (directory)
   "Return list of all contributed user names in repository DIRECTORY."
-  (when-let* ((default-directory directory)
-              (output (git-util-call-process "git" "log" "--all" "--format=%cN")))
+  (when-let*
+      ((default-directory directory)
+       (output (git-util-call-process "git" "log" "--all" "--format=%cN")))
     (split-string
      output
      "\n" t)))
@@ -871,11 +861,11 @@ With optional argument DEPTH limit max depth."
               (base-name (file-name-base host)))
     `(:repo
       ,(replace-regexp-in-string
-              "^/\\|[\\.]git$" "" filename)
-            :type
-            git
-            :host
-            ,(intern base-name))))
+        "^/\\|[\\.]git$" "" filename)
+      :type
+      git
+      :host
+      ,(intern base-name))))
 
 (defun git-util-melpa-current-recipe ()
   "Return plist of current git repo as straight recipe :repo, :type and :host."
@@ -917,8 +907,8 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
     (git-util-call-process "git" "status")))
 
 (defun git-util-repo-modified-p (directory)
-	"Return non nil if DIRECTORY git status is not up to date."
-	(when-let* ((default-directory directory)
+  "Return non nil if DIRECTORY git status is not up to date."
+  (when-let* ((default-directory directory)
               (status (git-util-call-process "git" "status" "--short")))
     (not (string-empty-p status))))
 
@@ -939,8 +929,6 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
                 (equal name (alist-get 'name cell)))
               alist)))
 
-
-
 (defun git-util-normalize-url-filename (filename)
   "Transform FILENAME to git filename."
   (funcall (git-util-compose-while-not-nil
@@ -960,7 +948,6 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
              #'replace-regexp-in-string
              "^/\\|/$" ""))
            filename))
-
 
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
@@ -991,7 +978,8 @@ With optional argument SSH-HOST also replace host."
 (defun git-util-ssh-to-https (ssh-remote)
   "Convert SSH-REMOTE to https url."
   (with-temp-buffer
-    (save-excursion (insert ssh-remote))
+    (save-excursion
+      (insert ssh-remote))
     (when (re-search-forward "@" nil t 1)
       (when-let* ((beg (point))
                   (end (re-search-forward ":" nil t 1)))
@@ -1013,8 +1001,8 @@ With optional argument SSH-HOST also replace host."
     (seq-uniq
      (mapcar (lambda (l)
                (let ((parts (split-string l)))
-                      (cons (car parts)
-                            (cadr parts))))
+                 (cons (car parts)
+                       (cadr parts))))
              (split-string remotes "\n" t)))))
 
 (defun git-util-current-branch (&optional directory)
@@ -1035,6 +1023,7 @@ Default value for DIRECTORY is `default-directory'."
        str))))
 
 (defvar jiralib-url)
+
 (defun git-util-jira-commit-message-setup ()
   "Try to insert template with jira template."
   (require 'jiralib nil t)
@@ -1067,8 +1056,9 @@ Default value for DIRECTORY is `default-directory'."
   "Clone repository of npm package."
   (interactive)
   (require 'ivy-yarn nil t)
-  (when-let* ((result (when (fboundp 'ivy-yarn-read-new-dependency)
-                        (ivy-yarn-read-new-dependency)))
+  (when-let* ((result
+               (when (fboundp 'ivy-yarn-read-new-dependency)
+                 (ivy-yarn-read-new-dependency)))
               (found (git-util-npm-seach-package-info result)))
     (let ((repo (alist-get 'repository (alist-get 'links found))))
       (git-util-clone-repo repo))))
@@ -1081,7 +1071,7 @@ Default value for DIRECTORY is `default-directory'."
     (completing-read
      "Clone\s" candidates (lambda (it)
                             (and it
-                                       (null (string-match-p "\\?" it))))
+                                 (null (string-match-p "\\?" it))))
      nil)))
 
 ;;;###autoload
