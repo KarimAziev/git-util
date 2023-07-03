@@ -1015,7 +1015,7 @@ Default value for DIRECTORY is `default-directory'."
 
 (defun git-util-jira-retrieve-issue-key-from-branch (str)
   "Retrieve jira issue from STR."
-  (when-let ((re "[[:upper:]]+-[[:digit:]]+"))
+  (let ((re "[[:upper:]]+[-_][[:digit:]]+"))
     (when (string-match-p re str)
       (replace-regexp-in-string
        (concat ".*?\\(" re "\\).*")
