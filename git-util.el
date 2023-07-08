@@ -6,7 +6,8 @@
 ;; URL: https://github.com/KarimAziev/git-util
 ;; Version: 0.1.0
 ;; Keywords: vc
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "28.1"))
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -36,6 +37,8 @@
 (declare-function json-read-file "json")
 (declare-function url-host "url-parse")
 (declare-function url-filename "url-parse")
+(require 'transient)
+(require 'magit)
 
 (defvar git-util-host-regexp
   (concat "\\("
@@ -298,12 +301,12 @@ The only one exception is made for `user-emacs-directory'."
   (apply #'git-util-shell-command-to-list
          "fdfind"
          (delq nil
-               (nconc '("--color=never"
-                        "--hidden"
-                        "--glob"
-                        ".git"
-                        "-t"
-                        "d")
+               (nconc (list "--color=never"
+                            "--hidden"
+                            "--glob"
+                            ".git"
+                            "-t"
+                            "d")
                       (git-util-fdfind-get-repo-search-paths directory)
                       '("-x"
                         "dirname")))))
@@ -961,6 +964,21 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
                           (url-filename urlobj))))
       (string-trim (concat "https://" host "/" reponame)))))
 
+(defun git-util-check-ssh-host (url)
+  "Transform URL with https protocol to ssh.
+With optional argument SSH-HOST also replace host."
+  (require 'url-parse)
+  (unless (git-util-https-url-p url)
+    (setq url (git-util-ssh-to-https url)))
+  (when-let ((urlobj
+              (when (and url
+                         (git-util-https-url-p url))
+                (url-generic-parse-url url))))
+    (when-let ((host (url-host urlobj))
+               (reponame (git-util-normalize-url-filename
+                          (url-filename urlobj))))
+      (git-util-call-process "ssh-keygen" "-F" host))))
+
 (defun git-util-url-https-to-ssh (url &optional ssh-host)
   "Transform URL with https protocol to ssh.
 With optional argument SSH-HOST also replace host."
@@ -1004,6 +1022,29 @@ With optional argument SSH-HOST also replace host."
                  (cons (car parts)
                        (cadr parts))))
              (split-string remotes "\n" t)))))
+
+(defun git-util-read-remote-alist ()
+  "Return cons of (REMOTE-NAME . REMOTE-URL).
+If there is more than one remote, read it in minibuffer with completions."
+  (when-let* ((remotes (git-util-remotes-alist))
+              (cell (if (> (length remotes) 1)
+                        (assoc-string
+                         (let* ((annotf (lambda (str)
+                                          (concat " " (or
+                                                       (cdr (assoc str remotes))
+                                                       "")))))
+                           (completing-read "Remote url: "
+                                            (lambda (str pred action)
+                                              (if (eq action 'metadata)
+                                                  `(metadata
+                                                    (annotation-function .
+                                                                         ,annotf))
+                                                (complete-with-action action
+                                                                      remotes
+                                                                      str pred)))))
+                         remotes)
+                      (car remotes))))
+    cell))
 
 (defun git-util-current-branch (&optional directory)
   "Return current git branch in DIRECTORY.
@@ -1095,27 +1136,114 @@ Default value for DIRECTORY is `default-directory'."
     (message "Cannot clone")))
 
 ;;;###autoload
-(defun git-util-change-remote-to-ssh ()
-  "Switch remote urLs from HTTPS to SSH."
+(defun git-util-cycle-remote-url (&optional no-confirm)
+  "Switch remote url in current repository from https to ssh, or ssh to https.
+With optional argumnt NO-CONFIRM don't prompt in minibuffer."
+  (interactive "P")
+  (when-let* ((cell (git-util-read-remote-alist))
+              (current-url (cdr cell))
+              (new-url
+               (cond ((not (git-util-check-ssh-host current-url))
+                      (when (git-util-ssh-url-p current-url)
+                        (git-util-ssh-to-https current-url)))
+                     (t (or
+                         (git-util-ssh-to-https current-url)
+                         (git-util-url-https-to-ssh current-url)))
+                     (git-util-url-https-to-ssh current-url))))
+    (if no-confirm
+        (git-util-call-process
+         "git" "remote" "set-url" (car cell)
+         new-url)
+      (and (yes-or-no-p (format "Change remote %s url from %s to %s?"
+                                (car cell)
+                                current-url
+                                new-url))
+           (git-util-call-process
+            "git" "remote" "set-url" (car cell)
+            new-url)))))
+
+;;;###autoload
+(defun git-util-change-remote-to-ssh (&optional no-confirm)
+  "Switch remote url in current repository from https to ssh.
+With optional argumnt NO-CONFIRM don't prompt in minibuffer."
+  (interactive "P")
+  (when-let* ((cell (git-util-read-remote-alist))
+              (current-url (cdr cell))
+              (new-url
+               (when (git-util-check-ssh-host current-url)
+                 (git-util-url-https-to-ssh current-url))))
+    (if no-confirm
+        (git-util-call-process
+         "git" "remote" "set-url" (car cell)
+         new-url)
+      (and (yes-or-no-p (format "Change remote %s url from %s to %s?"
+                                (car cell)
+                                current-url
+                                new-url))
+           (git-util-call-process
+            "git" "remote" "set-url" (car cell)
+            new-url)))))
+
+
+(defun git-util-magit-change-protocol (&optional prompt _initial-input history)
+  "Read remote url using converted value of current remote url as initial input.
+If the current url is https, use ssh protocol, otherwise - https.
+PROMPT and HISTORY are arguments for `read-string'."
+  (let* ((remote (substring-no-properties (magit-get-current-remote)))
+         (remote-cell (assoc remote
+                             (git-util-remotes-alist)))
+         (url (cdr remote-cell))
+         (new-url (read-string (or prompt
+                                   (format "Change %s to\s" url))
+                               (or (git-util-url-https-to-ssh url)
+                                   (git-util-ssh-to-https url))
+                               history)))
+    (list new-url)))
+
+(transient-define-infix git-util-magit-remote.<remote>.url ()
+  "Configure remote url using converted value as initial input.
+If the current url is https, use ssh protocol, otherwise - https.
+PROMPT and HISTORY are arguments for `read-string'."
+  :class 'magit--git-variable:urls
+  :scope #'magit--read-remote-scope
+  :reader 'git-util-magit-change-protocol
+  :variable "remote.%s.url"
+  :multi-value t
+  :history-key 'magit-remote.<remote>.*url)
+
+(defun git-util-replace-magit-remote-suffix ()
+  "Replace remote url infix in `magit-remote' prefix."
+  (transient-replace-suffix 'magit-remote 'magit-remote.<remote>.url
+    '("u" git-util-magit-remote.<remote>.url)))
+
+
+(defun git-util-with-with-every-dir (fn dirs)
+  "Call FN in every directory from DIRS."
+  (let ((max (length dirs))
+        (result))
+    (dotimes (k max)
+      (let ((file (nth k dirs)))
+        (when (and (file-exists-p file)
+                   (file-directory-p file))
+          (delay-mode-hooks
+            (let ((default-directory (expand-file-name file)))
+              (when-let ((res (funcall fn)))
+                (push res result)))))))
+    (nreverse result)))
+
+;;;###autoload
+(defun git-util-straight-dirs-to-ssh ()
+  "Fix git remote urls in straight-repos."
   (interactive)
-  (if-let ((remotes (git-util-remotes-alist)))
-      (let* ((cell (if (> (length remotes)
-                          1)
-                       (rassoc
-                        (completing-read "Remote" (mapcar #'cdr remotes)
-                                         nil t)
-                        remotes)
-                     (car remotes)))
-             (new-url (string-trim
-                       (read-string (format "Change %s to\s" (cdr cell))
-                                    (git-util-url-https-to-ssh (cdr cell))))))
-        (message
-         (shell-command-to-string
-          (string-join
-           (list "git remote set-url" (car cell)
-                 new-url)
-           "\s"))))
-    (message "No remotes found")))
+  (when (fboundp 'straight--repos-dir)
+    (git-util-with-with-every-dir
+     (lambda ()
+       (when (= (length (git-util-remotes-alist)) 1)
+         (git-util-change-remote-to-ssh)))
+     (directory-files (straight--repos-dir) t
+                      directory-files-no-dot-files-regexp))))
+
+
 
 (provide 'git-util)
 ;;; git-util.el ends here
