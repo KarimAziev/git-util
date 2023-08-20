@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/git-util
 ;; Version: 0.1.0
 ;; Keywords: vc
-;; Package-Requires: ((emacs "28.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.4.1") (magit "3.3.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -57,6 +57,11 @@
 It is used as source for git url completions."
   :type 'boolean
   :link "https://github.com/lemnos/chrome-session-dump"
+  :group 'git-util)
+
+(defcustom git-util-fd-args '("-E" "node_modules" "-E" "Dropbox" "-E" "Trash")
+  "Extra arguments for fdfind."
+  :type '(repeat (string))
   :group 'git-util)
 
 (defmacro git-util--pipe (&rest functions)
@@ -319,17 +324,19 @@ The only one exception is made for `user-emacs-directory'."
                (result (apply #'git-util-call-process
                               "fdfind"
                               (delq nil
-                                    (nconc (list "--color=never"
-                                                 "-I"
-                                                 "--hidden"
-                                                 "--glob"
-                                                 ".git"
-                                                 "-t"
-                                                 "d"
-                                                 "--max-depth" "5"
-                                                 (expand-file-name
-                                                  (or directory "~/")))
-                                           (list "-x" "dirname" "{//}"))))))
+                                    (append
+                                     git-util-fd-args
+                                     (list "--color=never"
+                                           "-I"
+                                           "--hidden"
+                                           "--glob"
+                                           ".git"
+                                           "-t"
+                                           "d"
+                                           "--max-depth" "5"
+                                           (expand-file-name
+                                            (or directory "~/")))
+                                     (list "-x" "dirname" "{//}"))))))
       (insert result)
       (shell-command-on-region (point-min)
                                (point-max)
@@ -531,7 +538,9 @@ With optional argument DEPTH limit max depth."
                                         count)))
                    (expand-file-name name dir))
                (expand-file-name basename dir)))
-           (git-util-f-guess-repos-dirs)))
+           (or
+            (git-util-get-projects-parents-dir)
+            (git-util-f-guess-repos-dirs))))
          (variants (if (null dir-files)
                        (append `(,default-directory)
                                default-variants)
@@ -763,6 +772,8 @@ With optional argument DEPTH limit max depth."
            1)
         (completing-read "git clone\s" variants)
       (car variants))))
+
+
 
 (defun git-util-alist-ssh-hosts ()
   "Return hosts found in .ssh/config."
@@ -1114,6 +1125,27 @@ Default value for DIRECTORY is `default-directory'."
                             (and it
                                  (null (string-match-p "\\?" it))))
      nil)))
+
+(defun git-util-git-top-level-non-git-dir ()
+  "Traverse up to non-git directory."
+  (let ((dir)
+        (curr default-directory))
+    (while (setq dir
+                 (when curr
+                   (locate-dominating-file curr ".git")))
+      (setq curr (file-name-parent-directory dir)))
+    curr))
+(declare-function project-external-roots "project")
+
+(defun git-util-get-projects-parents-dir ()
+  "Retrieve the parent directories of all known git projects."
+  (require 'project nil t)
+  (let ((parents))
+    (dolist (dir (project-known-project-roots))
+      (let ((parent-dir (file-name-parent-directory dir)))
+        (unless (member parent-dir parents)
+          (push parent-dir parents))))
+    parents))
 
 ;;;###autoload
 (defun git-util-clone-repo (&optional url)
