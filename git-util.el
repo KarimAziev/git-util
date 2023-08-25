@@ -37,6 +37,7 @@
 (declare-function json-read-file "json")
 (declare-function url-host "url-parse")
 (declare-function url-filename "url-parse")
+
 (require 'transient)
 (require 'magit)
 
@@ -1135,7 +1136,6 @@ Default value for DIRECTORY is `default-directory'."
                    (locate-dominating-file curr ".git")))
       (setq curr (file-name-parent-directory dir)))
     curr))
-(declare-function project-external-roots "project")
 
 (defun git-util-get-projects-parents-dir ()
   "Retrieve the parent directories of all known git projects."
@@ -1275,6 +1275,85 @@ PROMPT and HISTORY are arguments for `read-string'."
      (directory-files (straight--repos-dir) t
                       directory-files-no-dot-files-regexp))))
 
+
+
+
+(defun git-util-retrieve-host (url)
+  "Retrieve host alias from the given git URL.
+This function takes the URL string of a git repository, and returns the
+alias of the host as specified in your SSH config.
+Returns nil if '@' symbol is not found in URL."
+  (let* ((splitted-url (car (split-string url ":" t)))
+         (start (string-match-p "@" splitted-url)))
+    (when start
+      (substring-no-properties splitted-url (1+ start)))))
+
+(defun git-util-find-real-hostname (url)
+  "Find and return the real hostname for a git URL in SSH config.
+
+Given a git URL, this function finds the alias of the host as specified
+in SSH config.
+
+If the alias cannot be found in the SSH config, return the alias as itself."
+  (when-let ((host (and url
+                        (git-util-retrieve-host url))))
+    (let* ((config-lines
+            (when (file-exists-p "~/.ssh/config")
+              (with-temp-buffer
+                (insert-file-contents "~/.ssh/config")
+                (mapcar
+                 (lambda (it)
+                   (string-join (split-string it nil t) " "))
+                 (split-string
+                  (buffer-substring-no-properties
+                   (point-min)
+                   (point-max))
+                  "\n" t)))))
+           (host-name-line (cadr (member (concat "Host " host) config-lines))))
+      (if host-name-line
+          (cadr (split-string host-name-line " " t))
+        host))))
+
+
+;;;###autoload
+(defun git-util-print-real-hostname ()
+  "Find and print the real hostname of the current git repository.
+This function uses the \"git remote get-url origin\" command to get the git URL
+for the origin remote of the current git repository.
+
+It then parses that URL to get the
+host alias, then uses that alias to look up the real hostname in the user's
+SSH config file.
+
+If successful, it prints and returns the real hostname. If the lookup
+fails, the function prints and returns the alias as the assumed real hostname."
+  (interactive)
+  (let ((url (car (ignore-errors (process-lines
+                                  "git" "remote"
+                                  "get-url"
+                                  "origin")))))
+    (message (git-util-find-real-hostname url))))
+
+
+(defun git-util-advice-forge-split-url (orig-fn url)
+  "Call ORIG-FN (`forge-split-url') with URL and fix the host in the result.
+
+If the real hostname for git URL found in ssh config and
+result of calling ORIGN-FN is a cons cell, set the car to the real hostname,
+otherwise return result as it.
+
+Supposed to use as advice function for `forge-split-url':
+
+\=(advice-add \='forge--split-url
+              :around \='git-util-advice-forge-split-url)"
+  (require 'forge)
+  (let* ((cell (funcall orig-fn url))
+         (host
+          (when cell
+            (git-util-find-real-hostname url))))
+    (when host
+      (setcar cell host))
+    cell))
 
 
 (provide 'git-util)
