@@ -1288,6 +1288,20 @@ Returns nil if '@' symbol is not found in URL."
     (when start
       (substring-no-properties splitted-url (1+ start)))))
 
+(defun git-util-ssh-host-alist ()
+  "Return alist of SSH host and hostnames in `~/.ssh/config'."
+  (when (file-exists-p "~/.ssh/config")
+    (let ((result))
+      (with-temp-buffer
+        (insert-file-contents "~/.ssh/config")
+        (while (re-search-forward
+                "\\(\\(^\\|^\s+\\)\\_<\\(Host\\)\\_>[\s\t]+\\([^\n\r\f\s\t]+\\)[\s\t\f\n]+\\(HostName[\s\t]+\\([^\n]+\\)\\)\\)"
+                nil t 1)
+          (let ((host (match-string-no-properties 4))
+                (hostname (match-string-no-properties 6)))
+            (push (cons host hostname) result))))
+      result)))
+
 (defun git-util-find-real-hostname (url)
   "Find and return the real hostname for a git URL in SSH config.
 
@@ -1297,22 +1311,8 @@ in SSH config.
 If the alias cannot be found in the SSH config, return the alias as itself."
   (when-let ((host (and url
                         (git-util-retrieve-host url))))
-    (let* ((config-lines
-            (when (file-exists-p "~/.ssh/config")
-              (with-temp-buffer
-                (insert-file-contents "~/.ssh/config")
-                (mapcar
-                 (lambda (it)
-                   (string-join (split-string it nil t) " "))
-                 (split-string
-                  (buffer-substring-no-properties
-                   (point-min)
-                   (point-max))
-                  "\n" t)))))
-           (host-name-line (cadr (member (concat "Host " host) config-lines))))
-      (if host-name-line
-          (cadr (split-string host-name-line " " t))
-        host))))
+    (or (cdr (assoc-string host (git-util-ssh-host-alist)))
+        host)))
 
 
 ;;;###autoload
