@@ -265,19 +265,11 @@ If FILTER-FN passed call it with directories."
                       acc))))
       acc)))
 
-(defun git-util-f-non-hidden-files (directory &optional full)
-  "Return relative or full (if FULL is non nil) non-hidden files in DIRECTORY."
-  (if full
-      (mapcar (git-util--rpartial
-               expand-file-name directory)
-              (directory-files directory nil "^[^\\.]"))
-    (directory-files directory nil "^[^\\.]")))
-
 (defun git-util-f-non-hidden-dirs (directory &optional full)
   "Return absolute (with FULL) or relative non-hidden directories in DIRECTORY.
 The only one exception is made for `user-emacs-directory'."
   (let ((dirs (seq-filter #'file-directory-p
-                          (git-util-f-non-hidden-files directory t))))
+                          (directory-files directory t "\\`[^\\.]"))))
     (if full
         dirs
       (let ((len (length (file-name-as-directory
@@ -740,6 +732,7 @@ With optional argument DEPTH limit max depth."
     (when gui-urls
       (setq urls (nconc gui-urls urls)))
     urls))
+
 
 (defun git-util-https-url-p (url)
   "Return t if URL string is githost with https protocol."
@@ -1344,8 +1337,8 @@ otherwise return result as it.
 
 Supposed to use as advice function for `forge-split-url':
 
-\=(advice-add \='forge--split-url
-              :around \='git-util-advice-forge-split-url)"
+\=(advice-add \\='forge--split-url
+              :around \\='git-util-advice-forge-split-url)"
   (require 'forge)
   (let* ((cell (funcall orig-fn url))
          (host
