@@ -1173,8 +1173,8 @@ With optional argumnt NO-CONFIRM don't prompt in minibuffer."
                         (git-util-ssh-to-https current-url)))
                      (t (or
                          (git-util-ssh-to-https current-url)
-                         (git-util-url-https-to-ssh current-url)))
-                     (git-util-url-https-to-ssh current-url))))
+                         (git-util-url-https-to-ssh current-url))
+                        (git-util-url-https-to-ssh current-url)))))
     (if no-confirm
         (git-util-call-process
          "git" "remote" "set-url" (car cell)
