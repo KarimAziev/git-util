@@ -736,10 +736,8 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-https-url-p (url)
   "Return t if URL string is githost with https protocol."
-  (not (null
-        (string-match-p
-         (concat "https://" git-util-host-regexp)
-         url))))
+  (and (string-prefix-p "https://" url)
+       (string-match-p git-util-host-regexp url)))
 
 (defun git-util-ssh-url-p (url)
   "Return t if URL string is githost with git protocol."
@@ -1281,19 +1279,105 @@ Returns nil if '@' symbol is not found in URL."
     (when start
       (substring-no-properties splitted-url (1+ start)))))
 
+(defvar git-util-files-cache (make-hash-table :test 'equal))
+
+(defun git-util-get-file-cache (cache-key)
+  "Retrieve cached data if file hasn't changed.
+
+Argument CACHE-KEY is a key used to retrieve the cache entry from
+`git-util-files-cache'."
+  (let* ((cache
+          (gethash cache-key git-util-files-cache))
+         (cache-tick (and cache (plist-get cache :tick)))
+         (tick (and cache
+                    (file-attribute-modification-time (file-attributes
+                                                       cache-key
+                                                       'string)))))
+    (if (and cache (equal cache-tick tick))
+        (plist-get cache :cache)
+      (remhash cache-key git-util-files-cache))))
+
+(defun git-util-set-file-cache (path content)
+  "Cache JavaScript file CONTENT with modification time.
+
+Argument PATH is the file path for which to set the cache.
+
+Argument CONTENT is the content to be cached for the specified file."
+  (let* ((cache (gethash path git-util-files-cache))
+         (tick (file-attribute-modification-time (file-attributes
+                                                  path
+                                                  'string))))
+    (setq cache (list :tick tick
+                      :cache content))
+    (puthash path cache
+             git-util-files-cache)
+    (plist-get cache :cache)))
+
+(defun git-util-parse-ssh-config (file)
+  "Parse and return SSH config FILE as an alist of host entries."
+  (let ((result)
+        (curr))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (while
+          (pcase-let
+              ((`(,prop ,value)
+                (split-string (buffer-substring-no-properties
+                               (point)
+                               (line-end-position))
+                              nil
+                              t)))
+            (pcase prop
+              ("Host"
+               (when curr
+                 (push curr result))
+               (setq curr (cons value (list (cons prop value)))))
+              ("#")
+              ((pred (stringp))
+               (when curr
+                 (let ((cell (cdr curr)))
+                   (setcdr curr (append cell
+                                        (list (cons prop value))))))))
+            (zerop (forward-line 1))))
+      (when curr
+        (push curr result)))
+    result))
+
+(defun git-util-get-ssh-config (file)
+  "Parse SSH config from FILE and cache it.
+
+Argument FILE is the path to the SSH configuration file to be parsed."
+  (when (file-exists-p file)
+    (or (git-util-get-file-cache file)
+        (git-util-set-file-cache file
+                                 (git-util-parse-ssh-config
+                                  file)))))
+
 (defun git-util-ssh-host-alist ()
   "Return alist of SSH host and hostnames in `~/.ssh/config'."
-  (when (file-exists-p "~/.ssh/config")
-    (let ((result))
-      (with-temp-buffer
-        (insert-file-contents "~/.ssh/config")
-        (while (re-search-forward
-                "\\(\\(^\\|^\s+\\)\\_<\\(Host\\)\\_>[\s\t]+\\([^\n\r\f\s\t]+\\)[\s\t\f\n]+\\(HostName[\s\t]+\\([^\n]+\\)\\)\\)"
-                nil t 1)
-          (let ((host (match-string-no-properties 4))
-                (hostname (match-string-no-properties 6)))
-            (push (cons host hostname) result))))
-      result)))
+  (mapcar (pcase-lambda (`(,k . ,v))
+            (cons k (cdr (assoc-string "HostName" v))))
+          (git-util-get-ssh-config "~/.ssh/config")))
+
+(defvar forge-alist)
+(defun git-util-configure-forge-alist ()
+  "Add SSH hosts to `forge-alist' from `~/.ssh/config'."
+  (pcase-dolist (`(,host . ,props)
+                 (git-util-get-ssh-config "~/.ssh/config"))
+    (when-let ((hostname (cdr (assoc-string "HostName" props))))
+      (unless (assoc-string host forge-alist)
+        (when-let* ((forge-entry (assoc-string hostname forge-alist))
+                    (pos (seq-position forge-alist
+                                       forge-entry))
+                    (new-entry (cons host (cdr forge-entry))))
+          (let ((left (seq-take forge-alist pos))
+                (right (seq-drop forge-alist (1+ pos))))
+            (setq forge-alist (append left
+                                      (list forge-entry)
+                                      (list new-entry)
+                                      right))))))
+    forge-alist))
+
 
 (defun git-util-find-real-hostname (url)
   "Find and return the real hostname for a git URL in SSH config.
