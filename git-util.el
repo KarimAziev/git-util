@@ -91,7 +91,9 @@ It is used as source for git url completions."
   `(git-util--pipe ,@(reverse functions)))
 
 (defun git-util-compose-while-not-nil (&rest functions)
-  "Return right-to-left composition from FUNCTIONS."
+  "Compose FUNCTIONS from functions until a nil result.
+
+Remaining arguments FUNCTIONS are functions that will be composed together."
   (let ((fn))
     (setq functions (reverse functions))
     (setq fn (pop functions))
@@ -310,7 +312,10 @@ The only one exception is made for `user-emacs-directory'."
                         "dirname")))))
 
 (defun git-util-fdfind-get-all-repos-parents-dir (&optional directory)
-  "Return flags with directories in DIRECTORY to search with `fd'."
+  "List unique parent directories of Git repositories.
+
+Optional argument DIRECTORY is the directory to search for Git repositories. If
+not provided, the default is the user's home directory."
   (with-temp-buffer
     (erase-buffer)
     (when-let ((buff (current-buffer))
@@ -846,7 +851,7 @@ With optional argument DEPTH limit max depth."
 
 ;;;###autoload
 (defun git-util-visit-remote ()
-  "Return plist of current git repo as straight recipe :repo, :type and :host."
+  "Open the browser to visit a Git repository's remote URL."
   (interactive)
   (require 'url-parse)
   (when-let ((url (cdar (git-util-remotes-alist))))
@@ -968,8 +973,9 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
       (string-trim (concat "https://" host "/" reponame)))))
 
 (defun git-util-check-ssh-host (url)
-  "Transform URL with https protocol to ssh.
-With optional argument SSH-HOST also replace host."
+  "Check SSH host from Git URL.
+
+Argument URL is a string representing the url to check for SSH host keys."
   (require 'url-parse)
   (unless (git-util-https-url-p url)
     (setq url (git-util-ssh-to-https url)))
