@@ -65,6 +65,16 @@ It is used as source for git url completions."
   :type '(repeat (string))
   :group 'git-util)
 
+(defcustom git-util-magit-open-windows-in-direction 'right
+  "What direction to open new windows from the status buffer.
+For example, diffs and log buffers. Accepts `left', `right', `up', and `down'."
+  :group 'git-util
+  :type '(choice
+          (const right)
+          (const left)
+          (const up)
+          (const down)))
+
 (defmacro git-util--pipe (&rest functions)
   "Return left-to-right composition from FUNCTIONS."
   (declare (debug t)
@@ -1437,6 +1447,119 @@ Supposed to use as advice function for `forge-split-url':
     (when host
       (setcar cell host))
     cell))
+
+
+(defvar git-util-magit--stale-p nil)
+
+(defun git-util-magit-display-buffer-fn (buffer)
+  "Display BUFFER based on its major mode and specific conditions.
+
+Argument BUFFER is the buffer to be displayed.
+
+This function is the same as `magit-display-buffer-traditional', except:
+
+- If opened from a commit window, it will open below it.
+- Magit process windows are always opened in small windows below the current.
+- Everything else will reuse the same window."
+  (let ((buffer-mode (buffer-local-value 'major-mode buffer)))
+    (display-buffer
+     buffer
+     (cond ((and (eq buffer-mode 'magit-status-mode)
+                 (get-buffer-window buffer))
+            '(display-buffer-reuse-window))
+           ;; Any magit buffers opened from a commit window should open below
+           ;; it. Also open magit process windows below.
+           ((or (bound-and-true-p git-commit-mode)
+                (eq buffer-mode 'magit-process-mode))
+            (let ((size (if (eq buffer-mode 'magit-process-mode)
+                            0.35
+                          0.7)))
+              `(display-buffer-below-selected
+                . ((window-height .
+                    ,(truncate (* (window-height) size)))))))
+           ;; Everything else should reuse the current window.
+           ((or (not (derived-mode-p 'magit-mode))
+                (not (memq (with-current-buffer buffer major-mode)
+                           '(magit-process-mode
+                             magit-revision-mode
+                             magit-diff-mode
+                             magit-stash-mode
+                             magit-status-mode))))
+            '(display-buffer-same-window))
+           ('(git-util-magit-display-buffer-in-direction))))))
+
+(defun git-util-magit-display-buffer-in-direction (buffer alist)
+  "`display-buffer-alist' handler that opens BUFFER in a direction.
+
+Argument BUFFER is the buffer to be displayed.
+
+Argument ALIST is an association list containing display options.
+
+This differs from `display-buffer-in-direction' in one way: it will try to use a
+window that already exists in that direction. It will split otherwise."
+  (let ((direction (or (alist-get 'direction alist)
+                       git-util-magit-open-windows-in-direction))
+        (origin-window (selected-window)))
+    (if-let (window (window-in-direction direction))
+        (unless magit-display-buffer-noselect
+          (select-window window))
+      (if-let (window (and (not (one-window-p))
+                           (window-in-direction
+                            (pcase direction
+                              (`right 'left)
+                              (`left 'right)
+                              ((or `up `above) 'down)
+                              ((or `down `below) 'up)))))
+          (unless magit-display-buffer-noselect
+            (select-window window))
+        (let ((window (split-window nil nil direction)))
+          (when (and (not magit-display-buffer-noselect)
+                     (memq direction '(right down below)))
+            (select-window window))
+          (display-buffer-record-window 'reuse window buffer)
+          (set-window-buffer window buffer)
+          (set-window-parameter window 'quit-restore
+                                (list 'window 'window origin-window buffer))
+          (set-window-prev-buffers window nil))))
+    (unless magit-display-buffer-noselect
+      (switch-to-buffer buffer t t)
+      (selected-window))))
+
+(defvar git-util-magit--pos nil)
+
+(defun git-util-magit-set-window-state-h ()
+  "Set the local variable `git-util-magit--pos' with current buffer state."
+  (setq-local git-util-magit--pos (list (current-buffer)
+                                        (point)
+                                        (window-start))))
+
+(defun git-util-magit-restore-window-state-h ()
+  "Restore window state using stored buffer position and window start."
+  (when (and git-util-magit--pos (eq (current-buffer)
+                                     (car git-util-magit--pos)))
+    (goto-char (cadr git-util-magit--pos))
+    (set-window-start nil (caddr git-util-magit--pos) t)
+    (kill-local-variable 'git-util-magit--pos)))
+
+(defun git-util-magit-revert-buffer (buffer)
+  "Revert the given BUFFER and refresh its state if it's modified.
+
+Argument BUFFER is the buffer that the function will operate on, specifically by
+reverting any changes made to it."
+  (with-current-buffer buffer
+    (kill-local-variable 'git-util-magit--stale-p)
+    (when buffer-file-name
+      (if (buffer-modified-p (current-buffer))
+          (when (bound-and-true-p vc-mode)
+            (vc-refresh-state)
+            (force-mode-line-update))
+        (revert-buffer t t t)))))
+
+;;;###autoload
+(defun git-util-magit-revert-buffer-maybe-h ()
+  "Update `vc' and `git-gutter' if out of date."
+  (when git-util-magit--stale-p
+    (git-util-magit-revert-buffer (current-buffer))))
 
 
 (provide 'git-util)
