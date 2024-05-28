@@ -1561,6 +1561,12 @@ reverting any changes made to it."
   (when git-util-magit--stale-p
     (git-util-magit-revert-buffer (current-buffer))))
 
+(defun git-util-sync-fill-column-for-git-commit-mode (&rest _)
+  "Set the local `fill-column' to `git-commit-summary-max-length' if it is bound."
+  (setq-local fill-column (or (when (boundp 'git-commit-summary-max-length)
+                                (symbol-value 'git-commit-summary-max-length))
+                              fill-column)))
+
 
 (provide 'git-util)
 ;;; git-util.el ends here
