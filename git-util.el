@@ -75,6 +75,20 @@ For example, diffs and log buffers. Accepts `left', `right', `up', and `down'."
           (const up)
           (const down)))
 
+(defcustom git-util-after-create-repo-hook nil
+  "Hook run after creating a repository.
+
+A hook that runs after a repository is successfully created.
+
+Functions added to this hook are executed with the newly created
+repository's directory as the current working directory.
+
+This can be used to perform additional setup or configuration
+tasks, such as initializing submodules, setting up virtual
+environments, or installing dependencies."
+  :group 'gh-repo
+  :type 'hook)
+
 (defmacro git-util--pipe (&rest functions)
   "Return left-to-right composition from FUNCTIONS."
   (declare (debug t)
@@ -1171,7 +1185,12 @@ Default value for DIRECTORY is `default-directory'."
                                       "\s"))))
         (setq project-dir (expand-file-name
                            (car (reverse (split-string command)))))
-        (git-util-exec-in-dir command project-dir))
+        (git-util-exec-in-dir command project-dir
+                              (lambda ()
+                                (when (file-exists-p project-dir)
+                                  (let ((default-directory project-dir))
+                                    (run-hooks
+                                     'git-util-after-create-repo-hook))))))
     (message "Cannot clone")))
 
 ;;;###autoload
