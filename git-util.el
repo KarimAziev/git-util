@@ -306,7 +306,7 @@ The only one exception is made for `user-emacs-directory'."
 
 (defun git-util-shell-command-to-list (command &rest args)
   "Apply shell COMMAND with ARGS and return list of lines from output."
-  (when-let ((result (apply #'git-util-call-process command args)))
+  (when-let* ((result (apply #'git-util-call-process command args)))
     (split-string result "\n")))
 
 (defun git-util-map-search-paths (dirs)
@@ -342,7 +342,7 @@ Optional argument DIRECTORY is the directory to search for Git repositories. If
 not provided, the default is the user's home directory."
   (with-temp-buffer
     (erase-buffer)
-    (when-let ((buff (current-buffer))
+    (when-let* ((buff (current-buffer))
                (result (apply #'git-util-call-process
                               "fdfind"
                               (delq nil
@@ -482,7 +482,7 @@ not provided, the default is the user's home directory."
   (let ((parent (file-name-directory
                  (directory-file-name
                   (expand-file-name path default-directory)))))
-    (when-let ((dir (and (file-exists-p path)
+    (when-let* ((dir (and (file-exists-p path)
                          (file-exists-p parent)
                          (not (equal
                                (file-truename (directory-file-name
@@ -617,7 +617,7 @@ With optional argument DEPTH limit max depth."
 (defun git-util-chrome-bookmarks-read-json-file ()
   "Chrome bookmarks read json file."
   (require 'json)
-  (when-let ((file (git-util-chrome-url-chrome-guess-bookmarks-file))
+  (when-let* ((file (git-util-chrome-url-chrome-guess-bookmarks-file))
              (json-object-type 'plist)
              (json-array-type 'list))
     (when (file-exists-p file)
@@ -626,7 +626,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-chrome-list-urls-from-json-plist (plist)
   "Return list of git urls from chrome bookmarks PLIST."
-  (when-let ((roots (cdr (plist-get plist :roots))))
+  (when-let* ((roots (cdr (plist-get plist :roots))))
     (let ((children)
           (current))
       (while (setq current (pop roots))
@@ -634,7 +634,7 @@ With optional argument DEPTH limit max depth."
                  (plist-get current :children))
             (setq roots (append roots (plist-get current :children)))
           (when (listp current)
-            (when-let ((url (plist-get current :url)))
+            (when-let* ((url (plist-get current :url)))
               (when (string-match-p url git-util-host-regexp)
                 (setq children (push (plist-get current :url)
                                      children)))))))
@@ -688,7 +688,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-chrome-session-dump-get-active-tabs ()
   "Return list of active tabs in google-chrome."
-  (when-let ((file
+  (when-let* ((file
               (when (file-exists-p "~/.config/google-chrome/")
                 "~/.config/google-chrome/")))
     (if (and git-util-autoinstall-chrome-session-dump
@@ -720,7 +720,7 @@ With optional argument DEPTH limit max depth."
 
 (defun git-util-git-url-at-point ()
   "Return git urls at point or nil, if none."
-  (when-let ((url (thing-at-point 'url t)))
+  (when-let* ((url (thing-at-point 'url t)))
     (when (string-match-p git-util-host-regexp url)
       url)))
 
@@ -878,7 +878,7 @@ With optional argument DEPTH limit max depth."
   "Open the browser to visit a Git repository's remote URL."
   (interactive)
   (require 'url-parse)
-  (when-let ((url (cdar (git-util-remotes-alist))))
+  (when-let* ((url (cdar (git-util-remotes-alist))))
     (setq url (replace-regexp-in-string
                "\\.git$"
                ""
@@ -938,7 +938,7 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
 
 (defun git-util-repo-status (directory)
   "Return git status for DIRECTORY."
-  (when-let ((default-directory directory))
+  (when-let* ((default-directory directory))
     (git-util-call-process "git" "status")))
 
 (defun git-util-repo-modified-p (directory)
@@ -987,11 +987,11 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
 (defun git-util-normalize-https-url (url)
   "Normalize URL to https protocol to ssh."
   (require 'url-parse)
-  (when-let ((urlobj
+  (when-let* ((urlobj
               (when (and url
                          (git-util-https-url-p url))
                 (url-generic-parse-url url))))
-    (when-let ((host (url-host urlobj))
+    (when-let* ((host (url-host urlobj))
                (reponame (git-util-normalize-url-filename
                           (url-filename urlobj))))
       (string-trim (concat "https://" host "/" reponame)))))
@@ -1003,11 +1003,11 @@ Argument URL is a string representing the url to check for SSH host keys."
   (require 'url-parse)
   (unless (git-util-https-url-p url)
     (setq url (git-util-ssh-to-https url)))
-  (when-let ((urlobj
+  (when-let* ((urlobj
               (when (and url
                          (git-util-https-url-p url))
                 (url-generic-parse-url url))))
-    (when-let ((host (url-host urlobj))
+    (when-let* ((host (url-host urlobj))
                (reponame (git-util-normalize-url-filename
                           (url-filename urlobj))))
       (git-util-call-process "ssh-keygen" "-F" host))))
@@ -1016,11 +1016,11 @@ Argument URL is a string representing the url to check for SSH host keys."
   "Transform URL with https protocol to ssh.
 With optional argument SSH-HOST also replace host."
   (require 'url-parse)
-  (when-let ((urlobj
+  (when-let* ((urlobj
               (when (and url
                          (git-util-https-url-p url))
                 (url-generic-parse-url url))))
-    (when-let ((host (url-host urlobj))
+    (when-let* ((host (url-host urlobj))
                (reponame (git-util-normalize-url-filename
                           (url-filename urlobj))))
       (string-trim (concat "git@" (or ssh-host host)
@@ -1044,11 +1044,11 @@ With optional argument SSH-HOST also replace host."
 
 (defun git-util-remotes-alist ()
   "Return alist of remotes and associated urls (REMOTE-NAME . REMOTE-URL)."
-  (when-let ((remotes
-              (with-temp-buffer
-                (when (= 0 (apply #'call-process "git" nil t nil
-                                  '("remote" "-v")))
-                  (string-trim (buffer-string))))))
+  (when-let* ((remotes
+               (with-temp-buffer
+                 (when (= 0 (apply #'call-process "git" nil t nil
+                                   '("remote" "-v")))
+                   (string-trim (buffer-string))))))
     (seq-uniq
      (mapcar (lambda (l)
                (let ((parts (split-string l)))
@@ -1285,7 +1285,7 @@ PROMPT and HISTORY are arguments for `read-string'."
                    (file-directory-p file))
           (delay-mode-hooks
             (let ((default-directory (expand-file-name file)))
-              (when-let ((res (funcall fn)))
+              (when-let* ((res (funcall fn)))
                 (push res result)))))))
     (nreverse result)))
 
@@ -1399,7 +1399,7 @@ Argument FILE is the path to the SSH configuration file to be parsed."
   "Add SSH hosts to `forge-alist' from `~/.ssh/config'."
   (pcase-dolist (`(,host . ,props)
                  (git-util-get-ssh-config "~/.ssh/config"))
-    (when-let ((hostname (cdr (assoc-string "HostName" props))))
+    (when-let* ((hostname (cdr (assoc-string "HostName" props))))
       (unless (assoc-string host forge-alist)
         (when-let* ((forge-entry (assoc-string hostname forge-alist))
                     (pos (seq-position forge-alist
@@ -1421,7 +1421,7 @@ Given a git URL, this function finds the alias of the host as specified
 in SSH config.
 
 If the alias cannot be found in the SSH config, return the alias as itself."
-  (when-let ((host (and url
+  (when-let* ((host (and url
                         (git-util-retrieve-host url))))
     (or (cdr (assoc-string host (git-util-ssh-host-alist)))
         host)))
@@ -1519,10 +1519,10 @@ window that already exists in that direction. It will split otherwise."
   (let ((direction (or (alist-get 'direction alist)
                        git-util-magit-open-windows-in-direction))
         (origin-window (selected-window)))
-    (if-let (window (window-in-direction direction))
+    (if-let* (window (window-in-direction direction))
         (unless magit-display-buffer-noselect
           (select-window window))
-      (if-let (window (and (not (one-window-p))
+      (if-let* (window (and (not (one-window-p))
                            (window-in-direction
                             (pcase direction
                               (`right 'left)
