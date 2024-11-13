@@ -1390,9 +1390,11 @@ Argument FILE is the path to the SSH configuration file to be parsed."
 
 (defun git-util-ssh-host-alist ()
   "Return alist of SSH host and hostnames in `~/.ssh/config'."
-  (mapcar (pcase-lambda (`(,k . ,v))
-            (cons k (cdr (assoc-string "HostName" v))))
-          (git-util-get-ssh-config "~/.ssh/config")))
+  (delq nil
+        (mapcar (pcase-lambda (`(,k . ,v))
+                  (when-let* ((hostname (cdr (assoc-string "HostName" v))))
+                    (cons k hostname)))
+                (git-util-get-ssh-config "~/.ssh/config"))))
 
 (defvar forge-alist)
 (defun git-util-configure-forge-alist ()
