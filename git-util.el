@@ -75,6 +75,12 @@ For example, diffs and log buffers. Accepts `left', `right', `up', and `down'."
           (const up)
           (const down)))
 
+(defcustom git-util-fd-executbale (or (executable-find "fdfind")
+                                      (executable-find "fd"))
+  "Path to fd (fdfind) executbale."
+  :group 'git-util
+  :type 'string)
+
 (defcustom git-util-after-create-repo-hook nil
   "Hook run after creating a repository.
 
@@ -323,7 +329,7 @@ The only one exception is made for `user-emacs-directory'."
 (defun git-util-fdfind-get-all-git-repos (&optional directory)
   "Return flags with directories in DIRECTORY to search with `fd'."
   (apply #'git-util-shell-command-to-list
-         "fdfind"
+         git-util-fd-executbale
          (delq nil
                (nconc (list "--color=never"
                             "--hidden"
@@ -343,22 +349,22 @@ not provided, the default is the user's home directory."
   (with-temp-buffer
     (erase-buffer)
     (when-let* ((buff (current-buffer))
-               (result (apply #'git-util-call-process
-                              "fdfind"
-                              (delq nil
-                                    (append
-                                     git-util-fd-args
-                                     (list "--color=never"
-                                           "-I"
-                                           "--hidden"
-                                           "--glob"
-                                           ".git"
-                                           "-t"
-                                           "d"
-                                           "--max-depth" "5"
-                                           (expand-file-name
-                                            (or directory "~/")))
-                                     (list "-x" "dirname" "{//}"))))))
+                (result (apply #'git-util-call-process
+                               git-util-fd-executbale
+                               (delq nil
+                                     (append
+                                      git-util-fd-args
+                                      (list "--color=never"
+                                            "-I"
+                                            "--hidden"
+                                            "--glob"
+                                            ".git"
+                                            "-t"
+                                            "d"
+                                            "--max-depth" "5"
+                                            (expand-file-name
+                                             (or directory "~/")))
+                                      (list "-x" "dirname" "{//}"))))))
       (insert result)
       (shell-command-on-region (point-min)
                                (point-max)
@@ -373,77 +379,49 @@ not provided, the default is the user's home directory."
 (defun git-util-f-get-git-repos (&optional directory)
   "Return list of git repositories in DIRECTORY or home directory."
   (unless directory (setq directory (expand-file-name "~/")))
-  (let ((dirs
-         (or
-          (let ((command (seq-find #'executable-find
-                                   '("fdfind" "fd" "find"))))
-            (pcase command
-              ((or "fd" "fdfind")
-               (apply #'git-util-shell-command-to-list
-                      "fdfind"
-                      '("--color=never"
-                        "--hidden"
-                        "--glob"
-                        ".git"
-                        "-t"
-                        "d")
-                      (git-util-fdfind-get-repo-search-paths directory)
-                      '("-x"
-                        "dirname")))
-              ("find"
-               (funcall
-                (git-util--compose
-                 (git-util--rpartial split-string "\n" t)
-                 shell-command-to-string)
-                "find " directory
-                " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))))
-          (nconc
-           (list (expand-file-name directory))
-           (git-util-f-non-git-dirs-recoursively
-            directory "^[^\\.]")))))
-    (delete-dups (delq nil dirs))))
+  (let ((find-program))
+    (cond (git-util-fd-executbale
+           (apply #'git-util-shell-command-to-list
+                  git-util-fd-executbale
+                  '("--color=never"
+                    "--hidden"
+                    "--glob"
+                    ".git"
+                    "-t"
+                    "d")
+                  (git-util-fdfind-get-repo-search-paths directory)
+                  '("-x"
+                    "dirname")))
+          ((setq find-program (executable-find "find"))
+           (funcall
+            (git-util--compose
+             (git-util--rpartial split-string "\n" t)
+             shell-command-to-string)
+            find-program directory
+            " -name .git -maxdepth 5 -type d -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))
+          (t (nconc
+              (list (expand-file-name directory))
+              (git-util-f-non-git-dirs-recoursively
+               directory "^[^\\.]"))))))
 
-(defun git-util-f-get-git-repos-in-dirs (dirs &rest flags)
-  "Return list of git repositories in DIRS with FLAGS."
-  (or
-   (let ((command (seq-find #'executable-find
-                            '("fdfind" "fd" "find"))))
-     (pcase command
-       ((or "fd" "fdfind")
-        (apply #'git-util-shell-command-to-list
-               "fdfind"
-               '("--color=never"
-                 "--hidden"
-                 "--glob"
-                 ".git"
-                 "-t"
-                 "d")
-               flags
-               (git-util-map-search-paths (mapcar #'expand-file-name
-                                                  dirs))
-               '("-x"
-                 "dirname")))))))
 
 (defun git-util-f-guess-repos-dirs ()
   "Execute `fdfind' and return list parent directories of git repos."
-  (let ((command (seq-find #'executable-find
-                           '("fdfind" "fd" "find"))))
-    (pcase command
-      ((or "fd" "fdfind")
-       (git-util-fdfind-get-all-repos-parents-dir))
-      ("find"
-       (funcall
-        (git-util--compose
-         delete-dups
-         (git-util--partial mapcar #'git-util-f-parent)
-         (git-util--rpartial split-string "\n" t)
-         shell-command-to-string)
-        "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))
-      (_ (or
-          (nconc
-           (list (expand-file-name "~/"))
-           (git-util-f-non-git-dirs-recoursively
-            "~/" "^[^\\.]")))))))
+  (let ((find-program))
+    (cond (git-util-fd-executbale
+           (git-util-fdfind-get-all-repos-parents-dir))
+          ((setq find-program (executable-find "find"))
+           (funcall
+            (git-util--compose
+             delete-dups
+             (git-util--partial mapcar #'git-util-f-parent)
+             (git-util--rpartial split-string "\n" t)
+             shell-command-to-string)
+            "find ~/ -name .git -maxdepth 4 -exec dirname {} \\; -prune 2>&1 | grep -v \"Permission denied\""))
+          (t (nconc
+              (list (expand-file-name "~/"))
+              (git-util-f-non-git-dirs-recoursively
+               "~/" "^[^\\.]"))))))
 
 (defun git-util-filter-repos-by-email (email repos-dirs)
   "Return REPOS-DIRS in which EMAIL is member of authors."
