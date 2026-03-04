@@ -95,6 +95,19 @@ environments, or installing dependencies."
   :group 'gh-repo
   :type 'hook)
 
+(defcustom git-util-excludes nil
+  "List of exclude strings.
+
+List of path patterns to exclude from Git-related operations.
+
+Each element is a string interpreted as a Git pathspec exclude pattern.
+
+Use entries like \"build/\", \"*.elc\", or \"vendor/**\" to omit matching
+paths from results."
+  :group 'git-util
+  :type '(repeat
+          (string :tag "Exclude string")))
+
 (defmacro git-util--pipe (&rest functions)
   "Return left-to-right composition from FUNCTIONS."
   (declare (debug t)
@@ -1049,10 +1062,11 @@ If there is more than one remote, read it in minibuffer with completions."
                                               (if (eq action 'metadata)
                                                   `(metadata
                                                     (annotation-function .
-                                                                         ,annotf))
-                                                (complete-with-action action
-                                                                      remotes
-                                                                      str pred)))))
+                                                     ,annotf))
+                                                (complete-with-action
+                                                 action
+                                                 remotes
+                                                 str pred)))))
                          remotes)
                       (car remotes))))
     cell))
@@ -1565,6 +1579,61 @@ reverting any changes made to it."
   (setq-local fill-column (or (when (boundp 'git-commit-summary-max-length)
                                 (symbol-value 'git-commit-summary-max-length))
                               fill-column)))
+
+
+(defun git-util--current-project-root ()
+  "Return project root directory."
+  (require 'project)
+  (when-let* ((project (ignore-errors (project-current))))
+    (if (fboundp 'project-root)
+        (project-root project)
+      (with-no-warnings
+        (car (project-roots project))))))
+
+;;;###autoload
+(defun git-util-add-excludes (excludes project)
+  "Add exclude patterns to the PROJECT's .git/info/exclude file.
+
+Argument EXCLUDES is a string or list of strings to append to the
+.git/info/exclude file; when a string, it is converted to a
+single-element list and must be non-empty.
+
+Argument PROJECT is the project root directory used to locate
+PROJECT/.git/info/exclude."
+  (interactive
+   (let ((project (git-util--current-project-root)))
+     (if (or current-prefix-arg
+             (not git-util-excludes))
+         (list (list (read-string "Exclude: ")) project)
+       (list git-util-excludes project))))
+  (message "excludes %s project=`%S'" excludes project)
+  (when (stringp excludes)
+    (if (string-empty-p (string-trim excludes))
+        (user-error "Can't add empty exclude string")
+      (setq excludes (list excludes))))
+  (unless excludes
+    (user-error "No excludes to add"))
+  (let* ((exclude-file (progn
+                         (let ((file (expand-file-name ".git/info/exclude"
+                                                       project)))
+                           (unless (file-exists-p file)
+                             (user-error "File %s doesn't exist" file))
+                           file)))
+         (file-buff (get-file-buffer exclude-file)))
+    (with-current-buffer
+        (if (buffer-live-p file-buff)
+            file-buff
+          (find-file-noselect exclude-file))
+      (save-excursion
+        (dolist (it excludes)
+          (goto-char (point-max))
+          (if (save-excursion
+                (re-search-backward (regexp-quote it) nil t 1))
+              (message "'%s' already in excludes" it)
+            (insert (concat "\n" it)))))
+      (save-buffer)
+      (unless file-buff
+        (kill-buffer file-buff)))))
 
 
 (provide 'git-util)
