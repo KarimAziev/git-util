@@ -1606,7 +1606,6 @@ PROJECT/.git/info/exclude."
              (not git-util-excludes))
          (list (list (read-string "Exclude: ")) project)
        (list git-util-excludes project))))
-  (message "excludes %s project=`%S'" excludes project)
   (when (stringp excludes)
     (if (string-empty-p (string-trim excludes))
         (user-error "Can't add empty exclude string")
