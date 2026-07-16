@@ -41,17 +41,18 @@
 (require 'transient)
 (require 'magit)
 
-(defvar git-util-host-regexp
-  (concat "\\("
-          "\\(\\(github\\|gitlab\\|gitlab\\.[a-z]+\\)\\.com\\)"
-          "\\|"
-          "\\(\\(bitbucket\\|salsa[\\.]debian\\|framagit\\|codeberg\\|git[\\.]savannah[\\.]gnu\\|git[\\.]kernel\\|git[\\.]suckless\\|code[\\.]orgmode\\|gitlab[\\.]gnome\\)[\\.]org\\)"
-          "\\|"
-          "\\(\\(repo[\\.]or\\)[\\.]cz\\)"
-          "\\|"
-          "\\(git\\.sr\\.ht\\)"
-          "\\)")
-  "Regexp matching common git hosts.")
+(defcustom git-util-host-regexp (concat "\\("
+                                        "\\(\\(github\\|gitlab\\|gitlab\\.[a-z]+\\)\\.com\\)"
+                                        "\\|"
+                                        "\\(\\(bitbucket\\|salsa[\\.]debian\\|framagit\\|codeberg\\|git[\\.]savannah[\\.]gnu\\|git[\\.]kernel\\|git[\\.]suckless\\|code[\\.]orgmode\\|gitlab[\\.]gnome\\)[\\.]org\\)"
+                                        "\\|"
+                                        "\\(\\(repo[\\.]or\\)[\\.]cz\\)"
+                                        "\\|"
+                                        "\\(git\\.sr\\.ht\\)"
+                                        "\\)")
+  "Regexp matching common git hosts."
+  :group 'git-util
+  :type 'regexp)
 
 (defcustom git-util-autoinstall-chrome-session-dump nil
   "Whether to install https://github.com/lemnos/chrome-session-dump.
@@ -108,23 +109,30 @@ paths from results."
   :type '(repeat
           (string :tag "Exclude string")))
 
+
+(eval-and-compile
+  (defun git-util--expand (init-fn)
+    "If INIT-FN is a non-quoted symbol, add a sharp quote.
+Otherwise, return it as is."
+    (setq init-fn (macroexpand init-fn))
+    (if (symbolp init-fn)
+        `(#',init-fn)
+      `(,init-fn))))
+
 (defmacro git-util--pipe (&rest functions)
   "Return left-to-right composition from FUNCTIONS."
   (declare (debug t)
            (pure t)
            (side-effect-free t))
-  `(lambda (&rest args)
-     ,@(let ((init-fn (pop functions)))
-         (list
-          (seq-reduce
-           (lambda (acc fn)
-             (if (symbolp fn)
-                 `(funcall #',fn ,acc)
-               `(funcall ,fn ,acc)))
-           functions
-           (if (symbolp init-fn)
-               `(apply #',init-fn args)
-             `(apply ,init-fn args)))))))
+  (let ((args (make-symbol "args")))
+    `(lambda (&rest ,args)
+       ,@(let ((init-fn (pop functions)))
+          (list
+           (seq-reduce
+            (lambda (acc fn)
+              `(funcall ,@(git-util--expand fn) ,acc))
+            functions
+            `(apply ,@(git-util--expand init-fn) ,args)))))))
 
 (defmacro git-util--compose (&rest functions)
   "Return right-to-left composition from FUNCTIONS."
@@ -133,7 +141,7 @@ paths from results."
            (side-effect-free t))
   `(git-util--pipe ,@(reverse functions)))
 
-(defun git-util-compose-while-not-nil (&rest functions)
+(defun git-util--compose-while-not-nil (&rest functions)
   "Compose FUNCTIONS from functions until a nil result.
 
 Remaining arguments FUNCTIONS are functions that will be composed together."
@@ -156,26 +164,24 @@ Remaining arguments FUNCTIONS are functions that will be composed together."
   (declare (debug t)
            (pure t)
            (side-effect-free t))
-  `(lambda (it)
-     (or
-      ,@(mapcar (lambda (v)
-                  (if (symbolp v)
-                      `(,v it)
-                    `(funcall ,v it)))
-                functions))))
+  (let ((it (make-symbol "it")))
+    `(lambda (,it)
+       (or
+        ,@(mapcar (lambda (v)
+                    `(funcall ,@(git-util--expand v) ,it))
+           functions)))))
 
 (defmacro git-util--and (&rest functions)
   "Return an unary function which invoke FUNCTIONS until first nil result."
   (declare (debug t)
            (pure t)
            (side-effect-free t))
-  `(lambda (it)
-     (and
-      ,@(mapcar (lambda (v)
-                  (if (symbolp v)
-                      `(,v it)
-                    `(funcall ,v it)))
-                functions))))
+  (let ((it (make-symbol "it")))
+    `(lambda (,it)
+       (and
+        ,@(mapcar (lambda (v)
+                    `(funcall ,@(git-util--expand v) ,it))
+           functions)))))
 
 (defmacro git-util--partial (fn &rest args)
   "Return a partial application of FN to left-hand ARGS.
@@ -184,10 +190,38 @@ ARGS is a list of the last N arguments to pass to FN. The result is a new
 function which does the same as FN, except that the last N arguments are fixed
 at the values with which this function was called."
   (declare (side-effect-free t))
-  `(lambda (&rest pre-args)
-     ,(car (list (if (symbolp fn)
-                     `(apply #',fn (append (list ,@args) pre-args))
-                   `(apply ,fn (append (list ,@args) pre-args)))))))
+  (let ((pre-args (make-symbol "pre-args")))
+    `(lambda (&rest ,pre-args)
+       ,(car (list
+              `(apply ,@(git-util--expand fn)
+                      (append (list ,@args) ,pre-args)))))))
+
+(defmacro git-util--cond (&rest pairs)
+  "Return a function that expands a list of PAIRS to cond clauses.
+Every pair should be either:
+- a vector of [predicate transformer],
+- a list of (predicate transformer).
+
+The predicate can also be t.
+
+All of the arguments to function are applied to each of the predicates in turn
+until one returns a \"truthy\" value, at which point fn returns the result of
+applying its arguments to the corresponding transformer."
+  (declare (pure t)
+           (indent defun)
+           (side-effect-free error-free))
+  (setq pairs (mapcar (lambda (it)
+                        (if (listp it)
+                            (apply #'vector it)
+                          it))
+                      pairs))
+  (let ((args (make-symbol "args")))
+    `(lambda (&rest ,args)
+       (cond ,@(mapcar (lambda (v)
+                         (list (if (eq (aref v 0) t) t
+                                `(apply ,@(git-util--expand (aref v 0)) ,args))
+                          `(apply ,@(git-util--expand (aref v 1)) ,args)))
+                pairs)))))
 
 (defmacro git-util--rpartial (fn &rest args)
   "Return a partial application of FN to right-hand ARGS.
@@ -196,25 +230,24 @@ ARGS is a list of the last N arguments to pass to FN. The result is a new
 function which does the same as FN, except that the last N arguments are fixed
 at the values with which this function was called."
   (declare (side-effect-free t))
-  `(lambda (&rest pre-args)
-     ,(car (list (if (symbolp fn)
-                     `(apply #',fn (append pre-args (list ,@args)))
-                   `(apply ,fn (append pre-args (list ,@args))))))))
+  (let ((pre-args (make-symbol "pre-args")))
+    `(lambda (&rest ,pre-args)
+       ,(car (list
+              `(apply ,@(git-util--expand fn)
+                (append ,pre-args (list ,@args))))))))
 
-(defmacro git-util-when (pred fn)
+(defmacro git-util--when (pred fn)
   "Return a function that call FN if the result of calling PRED is non-nil.
 Both PRED and FN are called with one argument.
 If the result of PRED is nil, return the argument as is."
   (declare
    (indent defun))
-  `(lambda (arg)
-     (if ,(if (symbolp pred)
-              `(,pred arg)
-            `(funcall ,pred arg))
-         ,(if (symbolp fn)
-              `(,fn arg)
-            `(funcall ,fn arg))
-       arg)))
+  (let ((arg (make-symbol "arg")))
+    `(lambda (,arg)
+       (if
+           (funcall ,@(git-util--expand pred) ,arg)
+           (funcall ,@(git-util--expand fn) ,arg)
+         ,arg))))
 
 (defun git-util-call-process (command &rest args)
   "Execute COMMAND with ARGS synchronously.
@@ -224,23 +257,23 @@ code of the process and OUTPUT is its stdout output."
   (let ((buff (generate-new-buffer command)))
     (with-current-buffer buff
       (erase-buffer)
-      (let ((status))
-        (setq status (apply #'call-process command nil t nil
+      (let* ((status (apply #'call-process command nil t nil
                             (delq nil (flatten-list args))))
-        (let ((result (string-trim (buffer-string))))
-          (if (= 0 status)
-              (prog1 result (kill-current-buffer))
-            (let ((command-with-args (concat command "\s" (string-join
-                                                           (delq nil
-                                                                 (flatten-list
-                                                                  args))
-                                                           "\s"))))
-              (message "Error %s in %s: %s" command-with-args
-                       (when default-directory
-                         (abbreviate-file-name
-                          default-directory))
-                       result))
-            nil))))))
+             (result (string-trim (buffer-string))))
+        (if (eq status 0)
+            (prog1 result
+              (kill-current-buffer))
+          (let ((command-with-args (concat command "\s" (string-join
+                                                         (delq nil
+                                                               (flatten-list
+                                                                args))
+                                                         "\s"))))
+            (message "Error %s in %s: %s" command-with-args
+                     (when default-directory
+                       (abbreviate-file-name
+                        default-directory))
+                     result))
+          nil)))))
 
 (defun git-util-exec-in-dir (command project-dir &optional callback)
   "Execute COMMAND in PROJECT-DIR.
@@ -282,7 +315,7 @@ Invoke CALLBACK without args."
 
 ;; file utils
 
-(defun git-util-f-dirs-recoursively (directory &optional match depth filter-fn)
+(defun git-util--f-dirs-recoursively (directory &optional match depth filter-fn)
   "Return list of directories in DIRECTORY that matches MATCH.
 With optional argument DEPTH limit max depth.
 If FILTER-FN passed call it with directories."
@@ -302,15 +335,15 @@ If FILTER-FN passed call it with directories."
           (push it acc)
           (setq acc (if (or (not (numberp depth))
                             (> depth 0))
-                        (append acc (git-util-f-dirs-recoursively it
-                                                                  match
-                                                                  (when depth
-                                                                    (1- depth))
-                                                                  filter-fn))
+                        (append acc (git-util--f-dirs-recoursively it
+                                                                   match
+                                                                   (when depth
+                                                                     (1- depth))
+                                                                   filter-fn))
                       acc))))
       acc)))
 
-(defun git-util-f-non-hidden-dirs (directory &optional full)
+(defun git-util--f-non-hidden-dirs (directory &optional full)
   "Return absolute (with FULL) or relative non-hidden directories in DIRECTORY.
 The only one exception is made for `user-emacs-directory'."
   (let ((dirs (seq-filter #'file-directory-p
@@ -323,7 +356,7 @@ The only one exception is made for `user-emacs-directory'."
          (git-util--rpartial substring len)
          dirs)))))
 
-(defun git-util-shell-command-to-list (command &rest args)
+(defun git-util--shell-command-to-list (command &rest args)
   "Apply shell COMMAND with ARGS and return list of lines from output."
   (when-let* ((result (apply #'git-util-call-process command args)))
     (split-string result "\n")))
@@ -337,11 +370,11 @@ The only one exception is made for `user-emacs-directory'."
 (defun git-util-fdfind-get-repo-search-paths (&optional directory)
   "Return flags with non-hidden directories in DIRECTORY to search with `fd'."
   (git-util-map-search-paths
-   (git-util-f-non-hidden-dirs (or directory "~/") t)))
+   (git-util--f-non-hidden-dirs (or directory "~/") t)))
 
 (defun git-util-fdfind-get-all-git-repos (&optional directory)
   "Return flags with directories in DIRECTORY to search with `fd'."
-  (apply #'git-util-shell-command-to-list
+  (apply #'git-util--shell-command-to-list
          git-util-fd-executbale
          (delq nil
                (nconc (list "--color=never"
@@ -394,7 +427,7 @@ not provided, the default is the user's home directory."
   (unless directory (setq directory (expand-file-name "~/")))
   (let ((find-program))
     (cond (git-util-fd-executbale
-           (apply #'git-util-shell-command-to-list
+           (apply #'git-util--shell-command-to-list
                   git-util-fd-executbale
                   '("--color=never"
                     "--hidden"
@@ -518,7 +551,7 @@ If NOSORT is non-nil, the list is not sorted--its order is unpredictable.
 (defun git-util-f-non-git-dirs-recoursively (directory &optional match depth)
   "Return list of non git directories in DIRECTORY that matches MATCH.
 With optional argument DEPTH limit max depth."
-  (git-util-f-dirs-recoursively
+  (git-util--f-dirs-recoursively
    directory match depth
    (lambda (it)
      (let ((result (not
@@ -786,49 +819,17 @@ With optional argument DEPTH limit max depth."
       (car variants))))
 
 
+(defun git-util--parse-git-ssh-url (ssh-url)
+  "Parse SSH-URL like \"git@host:owner/repo.git\" or \"user@host/path\".
 
-(defun git-util-alist-ssh-hosts ()
-  "Return hosts found in .ssh/config."
-  (when (file-exists-p "~/.ssh/config")
-    (with-temp-buffer
-      (insert-file-contents
-       "~/.ssh/config")
-      (let ((alist))
-        (while (re-search-forward
-                "\\(HOST[\s\t]\\([^\n]+\\)[\n\s\t]+HOSTNAME[\s\t\n]\\([^\s\t\n]+\\)\\)"
-                nil t 1)
-          (let ((host (match-string-no-properties 2))
-                (hostname (match-string-no-properties 3)))
-            (push (cons host hostname)
-                  alist)))
-        alist))))
+Return (HOST . REST) where REST is the part after HOST (including the
+separator \":\" or \"/\"). Return nil if it doesn't look like an ssh URL."
+  (when (string-match
+         "\\`\\(?:[^@ \t\n]+@\\)?\\([^:/ \t\n]+\\)\\([:/].+\\)\\'"
+         ssh-url)
+    (cons (match-string 1 ssh-url)
+          (match-string 2 ssh-url))))
 
-(defun git-util-get-ssh-variants (ssh-url)
-  "Return variants of git ssh for SSH-URL."
-  (let* ((local-alist (git-util-alist-ssh-hosts))
-         (cell (with-temp-buffer
-                 (save-excursion
-                   (insert (replace-regexp-in-string "^git@" ""
-                                                     ssh-url)))
-                 (let ((beg (point))
-                       (end))
-                   (setq end (re-search-forward git-util-host-regexp nil t 1))
-                   (cons (buffer-substring-no-properties beg end)
-                         (string-trim (buffer-substring-no-properties
-                                       end
-                                       (point-max))))))))
-    (setq local-alist (seq-filter (lambda (it)
-                                    (equal
-                                     (car cell)
-                                     (cdr it)))
-                                  local-alist))
-    (seq-uniq
-     (append
-      (list ssh-url)
-      (mapcar (lambda (it)
-                (concat "git@" (car it)
-                        (cdr cell)))
-              local-alist)))))
 
 (defun git-util-get-authors-emails (directory)
   "Return list of all contributed emails in repository DIRECTORY."
@@ -940,8 +941,9 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
 
 (defun git-util-modified-repos-in-dir (directory)
   "Return list of modified repos in DIRECTORY."
-  (seq-filter #'git-util-repo-modified-p (git-util-f-get-git-repos
-                                          directory)))
+  (seq-filter #'git-util-repo-modified-p
+              (git-util-f-get-git-repos
+               directory)))
 
 (defun git-util-npm-seach-package-info (name)
   "Search NAME with npm and return alist with package info."
@@ -957,22 +959,17 @@ Recipe is a list, e.g. (PACKAGE-NAME :repo \"owner/repo\" :fetcher github)."
 
 (defun git-util-normalize-url-filename (filename)
   "Transform FILENAME to git filename."
-  (funcall (git-util-compose-while-not-nil
-            (git-util-when (git-util--compose
-                            not
-                            (apply-partially #'string-suffix-p
-                                             ".git"))
+  (funcall (git-util--compose-while-not-nil
+            (git-util--when (git-util--compose
+                             not
+                             (git-util--partial string-suffix-p ".git"))
               (git-util--rpartial concat ".git"))
             (git-util--rpartial string-join "/")
-            (git-util-when
-              (git-util--compose
-               (apply-partially #'<= 2)
-               length)
+            (git-util--when (git-util--compose (git-util--partial <= 2) length)
               (git-util--rpartial seq-take 2))
             (git-util--rpartial split-string "/")
-            (apply-partially
-             #'replace-regexp-in-string
-             "^/\\|/$" ""))
+            (git-util--partial replace-regexp-in-string
+                               "^/\\|/$" ""))
            filename))
 
 (defun git-util-normalize-https-url (url)
@@ -1003,42 +1000,14 @@ Argument URL is a string representing the url to check for SSH host keys."
                           (url-filename urlobj))))
       (git-util-call-process "ssh-keygen" "-F" host))))
 
-(defun git-util-url-https-to-ssh (url &optional ssh-host)
-  "Transform URL with https protocol to ssh.
-With optional argument SSH-HOST also replace host."
-  (require 'url-parse)
-  (when-let* ((urlobj
-              (when (and url
-                         (git-util-https-url-p url))
-                (url-generic-parse-url url))))
-    (when-let* ((host (url-host urlobj))
-               (reponame (git-util-normalize-url-filename
-                          (url-filename urlobj))))
-      (string-trim (concat "git@" (or ssh-host host)
-                           ":" reponame)))))
 
-(defun git-util-ssh-to-https (ssh-remote)
-  "Convert SSH-REMOTE to https url."
-  (with-temp-buffer
-    (save-excursion
-      (insert ssh-remote))
-    (when (re-search-forward "@" nil t 1)
-      (when-let* ((beg (point))
-                  (end (re-search-forward ":" nil t 1)))
-        (string-trim
-         (concat "https://"
-                 (buffer-substring-no-properties
-                  beg (1- end))
-                 "/"
-                 (buffer-substring-no-properties
-                  end (point-max))))))))
 
 (defun git-util-remotes-alist ()
   "Return alist of remotes and associated urls (REMOTE-NAME . REMOTE-URL)."
   (when-let* ((remotes
                (with-temp-buffer
-                 (when (= 0 (apply #'call-process "git" nil t nil
-                                   '("remote" "-v")))
+                 (when (eq 0 (apply #'call-process "git" nil t nil
+                                    '("remote" "-v")))
                    (string-trim (buffer-string))))))
     (seq-uniq
      (mapcar (lambda (l)
@@ -1047,7 +1016,7 @@ With optional argument SSH-HOST also replace host."
                        (cadr parts))))
              (split-string remotes "\n" t)))))
 
-(defun git-util-read-remote-alist ()
+(defun git-util--read-remote-cons ()
   "Return cons of (REMOTE-NAME . REMOTE-URL).
 If there is more than one remote, read it in minibuffer with completions."
   (when-let* ((remotes (git-util-remotes-alist))
@@ -1190,7 +1159,7 @@ Default value for DIRECTORY is `default-directory'."
   "Switch remote url in current repository from https to ssh, or ssh to https.
 With optional argumnt NO-CONFIRM don't prompt in minibuffer."
   (interactive "P")
-  (when-let* ((cell (git-util-read-remote-alist))
+  (when-let* ((cell (git-util--read-remote-cons))
               (current-url (cdr cell))
               (new-url
                (cond ((not (git-util-check-ssh-host current-url))
@@ -1217,7 +1186,7 @@ With optional argumnt NO-CONFIRM don't prompt in minibuffer."
   "Switch remote url in current repository from https to ssh.
 With optional argumnt NO-CONFIRM don't prompt in minibuffer."
   (interactive "P")
-  (when-let* ((cell (git-util-read-remote-alist))
+  (when-let* ((cell (git-util--read-remote-cons))
               (current-url (cdr cell))
               (new-url
                (when (git-util-check-ssh-host current-url)
@@ -1235,20 +1204,199 @@ With optional argumnt NO-CONFIRM don't prompt in minibuffer."
             new-url)))))
 
 
-(defun git-util-magit-change-protocol (&optional prompt _initial-input history)
-  "Read remote url using converted value of current remote url as initial input.
-If the current url is https, use ssh protocol, otherwise - https.
-PROMPT and HISTORY are arguments for `read-string'."
-  (let* ((remote (substring-no-properties (magit-get-current-remote)))
-         (remote-cell (assoc remote
-                             (git-util-remotes-alist)))
-         (url (cdr remote-cell))
-         (new-url (read-string (or prompt
-                                   (format "Change %s to\s" url))
-                               (or (git-util-url-https-to-ssh url)
-                                   (git-util-ssh-to-https url))
-                               history)))
-    (list new-url)))
+
+(defcustom git-util-git-hosts
+  '("github.com" "gitlab.com"
+    "salsa.debian.org" "framagit.org"
+    "gitlab.gnome.org" "codeberg.org"
+    "bitbucket.org" "git.savannah.gnu.org"
+    "git.kernel.org" "repo.or.cz"
+    "git.suckless.org" "git.sr.ht")
+  "List of known git forges hostnames.
+Used to restrict which SSH Host aliases are imported into `forge-alist`."
+  :group 'git-util
+  :type '(repeat string))
+
+(defcustom git-util-ssh-config-filenames '("~/.ssh/config")
+  "List of OpenSSH config filenames."
+  :group 'git-util
+  :type '(repeat file))
+
+(defun git-util--parse-git-remote (url)
+  "Parse a git remote URL and return a plist.
+
+Supported forms:
+- ssh/scp-like: [user@]host:owner/repo(.git)
+- ssh path:     ssh://[user@]host/owner/repo(.git)
+- https:        https://host/owner/repo(.git)
+
+
+Returned plist keys:
+  :scheme  one of \\='ssh \\='ssh+scp \\='https (or nil if unknown)
+  :user    user or nil
+  :host    host (string) or nil
+  :path    \"owner/repo.git\" (normalized, always ends with .git) or nil"
+  (require 'url-parse)
+  (cond ;; https://host/owner/repo(.git)
+   ((and (stringp url)
+         (string-prefix-p "https://" url))
+    (let* ((u (url-generic-parse-url url))
+           (host (url-host u))
+           (path (and (url-filename u)
+                      (git-util-normalize-url-filename (url-filename u)))))
+      (when (and host path)
+        (list
+         :scheme 'https
+         :user nil
+         :host host
+         :path path))))
+   ;; ssh://[user@]host/owner/repo(.git)
+   ((and (stringp url)
+         (string-prefix-p "ssh://" url))
+    (let* ((u (url-generic-parse-url url))
+           (host (url-host u))
+           (user (url-user u))
+           (path (and (url-filename u)
+                      (git-util-normalize-url-filename (url-filename u)))))
+      (when (and host path)
+        (list
+         :scheme 'ssh
+         :user user
+         :host host
+         :path path))))
+   ;; scp-like: [user@]host:path
+   ((and (stringp url)
+         (string-match
+          "\\`\\(?:\\([^@ \t\n]+\\)@\\)?\\([^:/ \t\n]+\\):\\(.+\\)\\'" url))
+    (let* ((user (match-string 1 url))
+           (host (match-string 2 url))
+           (path (git-util-normalize-url-filename (match-string 3 url))))
+      (when (and host path)
+        (list
+         :scheme 'ssh+scp
+         :user user
+         :host host
+         :path path))))
+   (t nil)))
+
+(defun git-util--git-host-p (host)
+  "Non-nil if HOST looks like a supported git forge host."
+  (and (stringp host)
+       (or (and (boundp 'git-util-git-hosts)
+                git-util-git-hosts
+                (member host git-util-git-hosts))
+           (and (boundp 'git-util-host-regexp)
+                git-util-host-regexp
+                (string-match-p git-util-host-regexp host)))))
+
+(defun git-util--git-remote-to-ssh (host path &optional user)
+  "Build scp-like ssh URL USER@HOST:PATH."
+  (format "%s@%s:%s" (or user "git") host path))
+
+(defun git-util--git-remote-to-https (host path)
+  "Build https URL for HOST/PATH."
+  (format "https://%s/%s" host path))
+
+
+(defun git-util--ssh-real-host (host)
+  "Resolve HOST to its real HostName from SSH config, or return HOST as is."
+  (or (cdr (assoc-string host (git-util-ssh-host-alist)))
+      host))
+
+(defun git-util--ssh-host-aliases (real-host)
+  "Return SSH config Host aliases whose HostName is REAL-HOST."
+  (mapcar #'car
+          (seq-filter (lambda (it) (equal real-host (cdr it)))
+                      (git-util-ssh-host-alist))))
+
+(defun git-util-get-remote-variants (url)
+  "Return git-related variants (ssh + https) for remote URL.
+
+The host is first resolved to its real HostName via
+`git-util-ssh-host-alist', so a URL that uses an SSH Host alias still
+yields all sibling aliases and the real host.
+Filters aliases by `git-util-git-hosts' (if non-nil) or
+`git-util-host-regexp'."
+  (let* ((p (git-util--parse-git-remote url)))
+    (if (not p)
+        (list url)
+      (let* ((host (plist-get p :host))
+             (path (plist-get p :path))
+             (user (or (plist-get p :user) "git"))
+             (real-host (git-util--ssh-real-host host))
+             ;; Resolve aliases only when the real host is git-related
+             (aliases (when (git-util--git-host-p real-host)
+                        (git-util--ssh-host-aliases real-host)))
+             (ssh-hosts (delete-dups (append (list host real-host) aliases)))
+             (ssh-urls (mapcar (lambda (h) (git-util--git-remote-to-ssh h path user))
+                               ssh-hosts))
+             ;; https must be built for the *real* forge host: SSH Host
+             ;; aliases don't exist in DNS, only inside the ssh client
+             (https-url (git-util--git-remote-to-https real-host path)))
+        (delete-dups (delq nil (append ssh-urls (list https-url))))))))
+
+;; Keep old name if other code calls it:
+(defun git-util-get-ssh-variants (ssh-url)
+  "Backward-compatible wrapper: return only ssh variants for SSH-URL."
+  (let* ((p (git-util--parse-git-remote ssh-url)))
+    (if (not p)
+        (list ssh-url)
+      (let* ((host (plist-get p :host))
+             (path (plist-get p :path))
+             (user (or (plist-get p :user) "git"))
+             (real-host (git-util--ssh-real-host host))
+             (aliases (git-util--ssh-host-aliases real-host))
+             (ssh-hosts (delete-dups (append (list host real-host) aliases))))
+        (delete-dups
+         (mapcar (lambda (h) (git-util--git-remote-to-ssh h path user))
+                 ssh-hosts))))))
+
+(defun git-util-url-https-to-ssh (url &optional ssh-host)
+  "Transform https URL to scp-like ssh URL.
+With optional argument SSH-HOST, replace host with SSH-HOST."
+  (let ((p (git-util--parse-git-remote url)))
+    (when (and p (eq (plist-get p :scheme) 'https))
+      (git-util--git-remote-to-ssh (or ssh-host (plist-get p :host))
+                                   (plist-get p :path)
+                                   "git"))))
+
+(defun git-util-ssh-to-https (ssh-remote)
+  "Convert SSH-REMOTE (scp-like or ssh://) to an https URL."
+  (let ((p (git-util--parse-git-remote ssh-remote)))
+    (when (and p (memq (plist-get p :scheme) '(ssh ssh+scp)))
+      (git-util--git-remote-to-https (plist-get p :host)
+                                     (plist-get p :path)))))
+
+
+
+;;;; Fix reader to use all variants
+(defun git-util--magit-remote-protocol-reader (&optional prompt initial-input
+                                                         history)
+  "Read a remote URL variant with completion and return it as a list.
+
+Optional argument PROMPT is a string used as the completion prompt;
+it defaults to \"Change URL to \", using the current remote URL.
+
+Optional argument INITIAL-INPUT is the initial minibuffer input
+string; it defaults to nil.
+
+Optional argument HISTORY is the completion history specification
+passed to completing-read; it defaults to nil."
+  (let* ((remote (or (transient-scope)
+                     (magit-get-remote)))
+         (remotes (git-util-remotes-alist))
+         (url (cdr (assoc remote remotes)))
+         ;; Variants includes both ssh + https, including ssh aliases when possible
+         (choices (or (and url (git-util-get-remote-variants url))
+                      (and url (list url))
+                      nil))
+         (new-url
+          (completing-read (or prompt (format "Change %s to " url))
+                           (delete-dups choices)
+                           nil nil initial-input history url)))
+    (list (or new-url url))))
+
+
 
 (transient-define-infix git-util-magit-remote.<remote>.url ()
   "Configure remote url using converted value as initial input.
@@ -1256,7 +1404,7 @@ If the current url is https, use ssh protocol, otherwise - https.
 PROMPT and HISTORY are arguments for `read-string'."
   :class 'magit--git-variable:urls
   :scope #'magit--read-remote-scope
-  :reader 'git-util-magit-change-protocol
+  :reader 'git-util--magit-remote-protocol-reader
   :variable "remote.%s.url"
   :multi-value t
   :history-key 'magit-remote.<remote>.*url)
@@ -1308,85 +1456,172 @@ Returns nil if '@' symbol is not found in URL."
 
 (defvar git-util-files-cache (make-hash-table :test 'equal))
 
+(defun git-util--file-tick (file)
+  "Return FILE's modification time if it exists.
+
+Argument FILE is a file name string; it has no default value."
+  (when (file-exists-p file)
+    (file-attribute-modification-time (file-attributes file 'string))))
+
 (defun git-util-get-file-cache (cache-key)
-  "Retrieve cached data if file hasn't changed.
-
-Argument CACHE-KEY is a key used to retrieve the cache entry from
-`git-util-files-cache'."
-  (let* ((cache
-          (gethash cache-key git-util-files-cache))
-         (cache-tick (and cache (plist-get cache :tick)))
-         (tick (and cache
-                    (file-attribute-modification-time (file-attributes
-                                                       cache-key
-                                                       'string)))))
-    (if (and cache (equal cache-tick tick))
+  "Retrieve cached data if all files in the key haven't changed.
+CACHE-KEY is either a string (single file) or a list of files."
+  (let* ((key (if (listp cache-key) cache-key (list cache-key)))
+         (cache (gethash key git-util-files-cache))
+         (cache-ticks (and cache (plist-get cache :ticks)))
+         (ticks (mapcar #'git-util--file-tick key)))
+    (if (and cache (equal cache-ticks ticks))
         (plist-get cache :cache)
-      (remhash cache-key git-util-files-cache))))
+      (remhash key git-util-files-cache)
+      nil)))
 
-(defun git-util-set-file-cache (path content)
-  "Cache JavaScript file CONTENT with modification time.
+(defun git-util-set-file-cache (cache-key content)
+  "Cache CONTENT with modification ticks for all files in CACHE-KEY.
+CACHE-KEY is either a string (single file) or a list of files."
+  (let* ((key (if (listp cache-key) cache-key (list cache-key)))
+         (ticks (mapcar #'git-util--file-tick key))
+         (cache (list :ticks ticks :cache content)))
+    (puthash key cache git-util-files-cache)
+    content))
 
-Argument PATH is the file path for which to set the cache.
 
-Argument CONTENT is the content to be cached for the specified file."
-  (let* ((cache (gethash path git-util-files-cache))
-         (tick (file-attribute-modification-time (file-attributes
-                                                  path
-                                                  'string))))
-    (setq cache (list :tick tick
-                      :cache content))
-    (puthash path cache
-             git-util-files-cache)
-    (plist-get cache :cache)))
+(defun git-util--strip-ssh-comment (line)
+  "Return LINE with ssh_config comments removed, or nil if full-line comment.
 
-(defun git-util-parse-ssh-config (file)
-  "Parse and return SSH config FILE as an alist of host entries."
-  (let ((result)
-        (curr))
-    (with-temp-buffer
-      (insert-file-contents file)
-      (while
-          (pcase-let
-              ((`(,prop ,value)
-                (split-string (buffer-substring-no-properties
-                               (point)
-                               (line-end-position))
-                              nil
-                              t)))
-            (pcase prop
-              ("Host"
-               (when curr
-                 (push curr result))
-               (setq curr (cons value (list (cons prop value)))))
-              ("#")
-              ((pred (stringp))
-               (when curr
-                 (let ((cell (cdr curr)))
-                   (setcdr curr (append cell
-                                        (list (cons prop value))))))))
-            (zerop (forward-line 1))))
-      (when curr
-        (push curr result)))
-    result))
+Argument LINE is a string, or nil treated as the empty string.
+
+OpenSSH: a comment starts with # at beginning of line (ignoring leading
+whitespace) or after whitespace."
+  (let ((s (string-trim-left (or line ""))))
+    (cond ((or (string-empty-p s)
+               (string-prefix-p "#" s))
+           ;; full-line comment
+           nil)
+          ;; inline comment: whitespace followed by #
+          (t
+           (replace-regexp-in-string "[ \t]+#.*\\'" "" s)))))
+
+(defun git-util--split-ssh-line (line)
+  "Return (PROP . VALUE) for LINE or nil."
+  (let ((s (git-util--strip-ssh-comment line)))
+    (when (and s (not (string-empty-p (string-trim s))))
+      ;; key + value (value may contain spaces)
+      (when (string-match "\\`\\([^ \t]+\\)[ \t]+\\(.+\\)\\'" s)
+        (cons (match-string 1 s) (string-trim (match-string 2 s)))))))
+
+(defun git-util--expand-includes (including-file include-value)
+  "Expand INCLUDE-VALUE (may contain multiple paths) relative to INCLUDING-FILE."
+  (let* ((base (file-name-directory (expand-file-name including-file)))
+         (parts (split-string include-value "[ \t]+" t))
+         (expanded
+          (cl-mapcan
+           (lambda (p)
+             (let* ((p (substitute-in-file-name p))
+                    (abs (if (file-name-absolute-p p)
+                             (expand-file-name p)
+                           (expand-file-name p base))))
+               ;; OpenSSH allows globs; expand-file-name doesn't expand globs.
+               ;; file-expand-wildcards returns nil if no match.
+               (let ((matches (file-expand-wildcards abs t)))
+                 (if matches matches (list abs)))))
+           parts)))
+    ;; Keep only existing readable files
+    (seq-filter (lambda (f) (and (file-exists-p f) (file-readable-p f)))
+                expanded)))
+
+(defun git-util--collect-ssh-config-files (file &optional seen)
+  "Return FILE and recursively included SSH config files in parse order.
+
+Argument FILE is a file name for an SSH config file; it has no
+default value.
+
+Optional argument SEEN is an equal-test hash table of already seen
+expanded FILE names; it defaults to a new empty hash table."
+  (let* ((file (expand-file-name file))
+         (seen (or seen (make-hash-table :test 'equal))))
+    (when (and (file-exists-p file) (file-readable-p file)
+               (not (gethash file seen)))
+      (puthash file t seen)
+      (let ((files (list file)))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((pair (git-util--split-ssh-line
+                         (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position)))))
+              (when (and pair (string-equal (car pair) "Include"))
+                (dolist (inc (git-util--expand-includes file (cdr pair)))
+                  (setq files (append files (git-util--collect-ssh-config-files inc seen))))))
+            (forward-line 1)))
+        files))))
+
+(defun git-util--parse-ssh-config (file)
+  "Parse SSH config FILE, handling Include, and return an alist of host entries.
+
+Result format:
+  ((PATTERN . ((\"Host\" . \"a b c\") (\"HostName\" . ...) ...)) ...)
+
+For a line like: Host a b c
+this emits one entry per pattern (a, b, c), each sharing the same properties."
+  (let ((result nil)
+        (curr-patterns nil)     ;; list of patterns for the current block
+        (curr-props nil))       ;; alist of properties for the current block
+    (cl-labels
+        ((flush ()
+           (when curr-patterns
+             (dolist (pat curr-patterns)
+               (push (cons pat (reverse curr-props)) result)))
+           (setq curr-patterns nil
+                 curr-props nil)))
+      (dolist (f (git-util--collect-ssh-config-files file))
+        (with-temp-buffer
+          (insert-file-contents f)
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((pair (git-util--split-ssh-line
+                         (buffer-substring-no-properties
+                          (line-beginning-position) (line-end-position)))))
+              (when pair
+                (pcase (car pair)
+                  ("Host"
+                   (flush)
+                   (setq curr-patterns (split-string (cdr pair) "[ \t]+" t)
+                         curr-props (list (cons "Host" (cdr pair)))))
+                  ("Include"
+                   ;; already expanded in file collection
+                   nil)
+                  (_
+                   (when curr-patterns
+                     (push pair curr-props)))))
+            (forward-line 1)))))
+      (flush)
+      (nreverse result))))
 
 (defun git-util-get-ssh-config (file)
-  "Parse SSH config from FILE and cache it.
-
-Argument FILE is the path to the SSH configuration file to be parsed."
+  "Parse SSH config from FILE and cache it, including its Include closure."
   (when (file-exists-p file)
-    (or (git-util-get-file-cache file)
-        (git-util-set-file-cache file
-                                 (git-util-parse-ssh-config
-                                  file)))))
+    (let* ((files (git-util--collect-ssh-config-files file))
+           ;; cache-key is the full list of involved files (order matters)
+           (cache-key files))
+      (or (git-util-get-file-cache cache-key)
+          (git-util-set-file-cache cache-key
+                                   (git-util--parse-ssh-config file))))))
+
 
 (defun git-util-ssh-host-alist ()
-  "Return alist of SSH host and hostnames in `~/.ssh/config'."
-  (delq nil
-        (mapcar (pcase-lambda (`(,k . ,v))
-                  (when-let* ((hostname (cdr (assoc-string "HostName" v))))
-                    (cons k hostname)))
-                (git-util-get-ssh-config "~/.ssh/config"))))
+  "Return alist of SSH host and hostnames from `git-util-ssh-config-filenames`."
+  (let ((files (mapcar #'expand-file-name git-util-ssh-config-filenames)))
+    (delq nil
+          (cl-mapcan
+           (lambda (file)
+             (when-let* ((cfg (git-util-get-ssh-config file)))
+               (mapcar (pcase-lambda (`(,k . ,v))
+                         (when-let* ((hostname (cdr
+                                                (assoc-string "HostName" v t))))
+                           (cons k hostname)))
+                       cfg)))
+           files))))
 
 (defvar forge-alist)
 (defun git-util-configure-forge-alist ()
@@ -1417,8 +1652,7 @@ in SSH config.
 If the alias cannot be found in the SSH config, return the alias as itself."
   (when-let* ((host (and url
                         (git-util-retrieve-host url))))
-    (or (cdr (assoc-string host (git-util-ssh-host-alist)))
-        host)))
+    (git-util--ssh-real-host host)))
 
 
 ;;;###autoload
@@ -1462,7 +1696,7 @@ Supposed to use as advice function for `forge-split-url':
     cell))
 
 
-(defvar git-util-magit--stale-p nil)
+(defvar git-util--magit-stale-p nil)
 
 (defun git-util-magit-display-buffer-fn (buffer)
   "Display BUFFER based on its major mode and specific conditions.
@@ -1538,21 +1772,21 @@ window that already exists in that direction. It will split otherwise."
       (switch-to-buffer buffer t t)
       (selected-window))))
 
-(defvar git-util-magit--pos nil)
+(defvar git-util--magit-pos nil)
 
 (defun git-util-magit-set-window-state-h ()
-  "Set the local variable `git-util-magit--pos' with current buffer state."
-  (setq-local git-util-magit--pos (list (current-buffer)
+  "Set the local variable `git-util--magit-pos' with current buffer state."
+  (setq-local git-util--magit-pos (list (current-buffer)
                                         (point)
                                         (window-start))))
 
 (defun git-util-magit-restore-window-state-h ()
   "Restore window state using stored buffer position and window start."
-  (when (and git-util-magit--pos (eq (current-buffer)
-                                     (car git-util-magit--pos)))
-    (goto-char (cadr git-util-magit--pos))
-    (set-window-start nil (caddr git-util-magit--pos) t)
-    (kill-local-variable 'git-util-magit--pos)))
+  (when (and git-util--magit-pos (eq (current-buffer)
+                                     (car git-util--magit-pos)))
+    (goto-char (cadr git-util--magit-pos))
+    (set-window-start nil (caddr git-util--magit-pos) t)
+    (kill-local-variable 'git-util--magit-pos)))
 
 (defun git-util-magit-revert-buffer (buffer)
   "Revert the given BUFFER and refresh its state if it's modified.
@@ -1560,7 +1794,7 @@ window that already exists in that direction. It will split otherwise."
 Argument BUFFER is the buffer that the function will operate on, specifically by
 reverting any changes made to it."
   (with-current-buffer buffer
-    (kill-local-variable 'git-util-magit--stale-p)
+    (kill-local-variable 'git-util--magit-stale-p)
     (when buffer-file-name
       (if (buffer-modified-p (current-buffer))
           (when (bound-and-true-p vc-mode)
@@ -1570,8 +1804,8 @@ reverting any changes made to it."
 
 ;;;###autoload
 (defun git-util-magit-revert-buffer-maybe-h ()
-  "Update `vc' and `git-gutter' if out of date."
-  (when git-util-magit--stale-p
+  "Revert the current buffer when its Magit state is stale."
+  (when git-util--magit-stale-p
     (git-util-magit-revert-buffer (current-buffer))))
 
 (defun git-util-sync-fill-column-for-git-commit-mode (&rest _)
